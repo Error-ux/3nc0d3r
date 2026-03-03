@@ -44,16 +44,14 @@ async def main():
     # 3. Scale (Requested: scale=-1:1080/Res)
     vf_filters.append(f"scale=-1:{res_label}")
     
-    # FIX 1: Use -filter:V (capital V) to apply filters only to real video streams, ignoring cover art
-    video_filters = ["-filter:V", ",".join(vf_filters)]
+    # FIX 1: Explicitly target only the FIRST video stream (v:0) for filters 
+    video_filters = ["-filter:v:0", ",".join(vf_filters)]
 
     # -- AUDIO CONFIGURATION --
-    # Requested: -c:a libopus -b:a 32k -vbr on
     audio_cmd = ["-c:a", "libopus", "-b:a", "32k", "-vbr", "on"]
     final_audio_bitrate = "32k" # For UI display
 
     # -- SVT-AV1 PARAMETERS --
-    # FIX 2: Removed 'enable-tpl-la=1' as it is deprecated in SVT-AV1 v2+ and crashes in v4+
     svtav1_tune = "tune=0:film-grain=0:enable-overlays=1:aq-mode=1"
 
     # UI Labels
@@ -72,15 +70,15 @@ async def main():
         cmd = [
             "ffmpeg", "-i", config.SOURCE, 
             "-map", "0",              # Map all streams
-            "-c", "copy",             # FIX 3: Copy all streams by default (saves cover arts, fonts, and subs untouched)
+            "-c", "copy",             # Copy all streams by default (keeps cover art, fonts, subs)
             *video_filters,
-            "-c:V", "libsvtav1",      # FIX 4: Use :V (capital) to specifically encode only main video, bypassing MJPEG images
-            "-pix_fmt:V", "yuv420p10le",
+            "-c:v:0", "libsvtav1",    # FIX 2: Force AV1 encoder ONLY on the first video stream
+            "-pix_fmt:v:0", "yuv420p10le", # FIX 3: Force pixel format ONLY on the first video stream
             "-crf", str(final_crf), 
             "-preset", str(final_preset),
             "-svtav1-params", svtav1_tune,
             "-threads", "0",
-            *audio_cmd,               # Overrides -c copy for audio 
+            *audio_cmd,               # Overrides -c copy for all audio streams
             "-map_chapters", "0",     # Map chapters
             "-progress", "pipe:1", 
             "-nostats", 
@@ -105,7 +103,6 @@ async def main():
                         if time.time() - last_update > 8:
                             size = os.path.getsize(config.FILE_NAME)/(1024*1024) if os.path.exists(config.FILE_NAME) else 0
                             crop_label_txt = f" | Cropped" if crop_val else ""
-                            # Updated UI call with fixed bitrate label
                             scifi_ui = get_encode_ui(config.FILE_NAME, speed, fps, elapsed, eta, curr_sec, duration, percent, final_crf, final_preset, res_label, crop_label_txt, hdr_label, grain_label, config.AUDIO_MODE, final_audio_bitrate, size)
                             try:
                                 await app.edit_message_text(config.CHAT_ID, status.id, scifi_ui, parse_mode=enums.ParseMode.HTML)
@@ -124,7 +121,6 @@ async def main():
             return
 
         # 7. POST-PROCESSING (Remux)
-        # We run this to ensure clean seeking and container integrity, even though ffmpeg mapped chapters
         await app.edit_message_text(config.CHAT_ID, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>", parse_mode=enums.ParseMode.HTML)
         fixed_file = f"FIXED_{config.FILE_NAME}"
         subprocess.run(["mkvmerge", "-o", fixed_file, config.FILE_NAME, "--no-video", "--no-audio", "--no-subtitles", config.SOURCE])

@@ -15,7 +15,7 @@ on:
         description: 'Resolution'
       custom_crf:
         description: 'CRF'
-        default: '42'
+        default: '55'
       custom_preset:
         description: 'Preset'
         default: '6'
@@ -27,7 +27,7 @@ on:
         default: 'opus'
       audio_bitrate:
         description: 'Audio Bitrate'
-        default: '128k'
+        default: '64k'
       run_vmaf:
         description: 'Run VMAF?'
         default: 'true'

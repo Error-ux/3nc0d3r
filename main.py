@@ -44,8 +44,7 @@ async def main():
     # 3. Scale (Requested: scale=-1:1080/Res)
     vf_filters.append(f"scale=-1:{res_label}")
     
-    # FIX 1: Explicitly target only the FIRST video stream (v:0) for filters 
-    video_filters = ["-filter:v:0", ",".join(vf_filters)]
+    video_filters = ["-vf", ",".join(vf_filters)]
 
     # -- AUDIO CONFIGURATION --
     audio_cmd = ["-c:a", "libopus", "-b:a", "32k", "-vbr", "on"]
@@ -69,16 +68,20 @@ async def main():
         # 5. ENCODING EXECUTION
         cmd = [
             "ffmpeg", "-i", config.SOURCE, 
-            "-map", "0",              # Map all streams
-            "-c", "copy",             # Copy all streams by default (keeps cover art, fonts, subs)
+            # FIX: Explicitly map only what we need. 
+            # This completely bypasses FFmpeg's font/cover-art muxing crashes.
+            "-map", "0:v:0",          # Map ONLY the first video stream (the episode itself)
+            "-map", "0:a?",           # Map all audio streams (if any exist)
+            "-map", "0:s?",           # Map all subtitle streams (if any exist)
             *video_filters,
-            "-c:v:0", "libsvtav1",    # FIX 2: Force AV1 encoder ONLY on the first video stream
-            "-pix_fmt:v:0", "yuv420p10le", # FIX 3: Force pixel format ONLY on the first video stream
+            "-c:v", "libsvtav1", 
+            "-pix_fmt", "yuv420p10le",
             "-crf", str(final_crf), 
             "-preset", str(final_preset),
             "-svtav1-params", svtav1_tune,
             "-threads", "0",
-            *audio_cmd,               # Overrides -c copy for all audio streams
+            *audio_cmd, 
+            "-c:s", "copy",           # Copy subtitles securely
             "-map_chapters", "0",     # Map chapters
             "-progress", "pipe:1", 
             "-nostats", 
@@ -121,6 +124,7 @@ async def main():
             return
 
         # 7. POST-PROCESSING (Remux)
+        # mkvmerge will safely pull the fonts and cover art from config.SOURCE here!
         await app.edit_message_text(config.CHAT_ID, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>", parse_mode=enums.ParseMode.HTML)
         fixed_file = f"FIXED_{config.FILE_NAME}"
         subprocess.run(["mkvmerge", "-o", fixed_file, config.FILE_NAME, "--no-video", "--no-audio", "--no-subtitles", config.SOURCE])

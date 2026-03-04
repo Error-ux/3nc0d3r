@@ -39,31 +39,27 @@ def _kv_base():
     )
 
 
-def _kv_poll_check_and_clear():
+def _kv_poll_check():
     """
     Checks for poll_request flag in KV.
-    If found: deletes it immediately (so only one encode handles it) and returns True.
-    If not found (404): returns False.
-    All other errors: returns False silently.
+    If found and timestamp is fresh (within 60s): returns that timestamp.
+    Does NOT delete — all running encodes must each see the same flag and fire.
+    If not found (404) or stale: returns False.
     """
     if not _kv_configured():
         return False
     try:
-        # GET the flag
         get_req = urllib.request.Request(
             f"{_kv_base()}/poll_request",
             method="GET",
             headers=_kv_headers()
         )
-        urllib.request.urlopen(get_req, timeout=3)
-        # Flag exists — delete it immediately so other encodes don't also fire
-        del_req = urllib.request.Request(
-            f"{_kv_base()}/poll_request",
-            method="DELETE",
-            headers=_kv_headers()
-        )
-        urllib.request.urlopen(del_req, timeout=3)
-        return True
+        resp = urllib.request.urlopen(get_req, timeout=3)
+        ts = int(resp.read().decode().strip())
+        # Only respond if the flag was set within the last 60s
+        if (time.time() * 1000) - ts < 60_000:
+            return ts
+        return False
     except urllib.error.HTTPError:
         return False  # 404 = no flag, expected most of the time
     except Exception:
@@ -73,10 +69,10 @@ def _kv_poll_check_and_clear():
 # ---------------------------------------------------------------------------
 # PROGRESS MESSAGE SENDER
 # Sends a fresh TG message with the current encode state.
-# Schedules deletion after 10s as a background task — never blocks encode loop.
+# Schedules deletion after 30s as a background task — never blocks encode loop.
 # ---------------------------------------------------------------------------
 async def send_progress_and_autodelete(app, payload: dict):
-    """Sends a progress box to TG then deletes it after 10s."""
+    """Sends a progress box to TG then deletes it after 30s."""
     try:
         bar_ui = get_encode_ui(
             payload["file"],
@@ -102,7 +98,7 @@ async def send_progress_and_autodelete(app, payload: dict):
             bar_ui,
             parse_mode=enums.ParseMode.HTML
         )
-        await asyncio.sleep(10)
+        await asyncio.sleep(30)
         try:
             await msg.delete()
         except Exception:
@@ -197,9 +193,10 @@ async def main():
         ]
 
         start_time      = time.time()
-        last_poll_check = 0
+        last_poll_check  = 0
+        last_poll_ts     = 0   # timestamp of the last /p we already responded to
         # Track in-flight progress sends so we don't stack them
-        progress_task   = None
+        progress_task    = None
 
         with open(config.LOG_FILE, "w") as f_log:
             process = subprocess.Popen(
@@ -221,12 +218,13 @@ async def main():
                         eta      = (elapsed / percent) * (100 - percent) if percent > 0 else 0
                         size_mb  = os.path.getsize(config.FILE_NAME) / (1024 * 1024) if os.path.exists(config.FILE_NAME) else 0
 
-                        # Check KV flag every 5s — fast 404 when /p not sent
-                        if time.time() - last_poll_check >= 5:
+                        # Check KV flag every 2s — fast 404 when /p not sent
+                        if time.time() - last_poll_check >= 2:
                             last_poll_check = time.time()
                             # Run in executor so it never blocks ffmpeg stdout reading
-                            flag = await loop.run_in_executor(None, _kv_poll_check_and_clear)
-                            if flag and (progress_task is None or progress_task.done()):
+                            flag = await loop.run_in_executor(None, _kv_poll_check)
+                            if flag and flag != last_poll_ts and (progress_task is None or progress_task.done()):
+                                last_poll_ts = flag
                                 # Fire-and-forget: send progress box + auto-delete in 10s
                                 progress_task = asyncio.create_task(
                                     send_progress_and_autodelete(app, {

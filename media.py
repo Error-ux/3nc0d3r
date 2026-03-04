@@ -2,6 +2,7 @@ import asyncio
 import os
 import subprocess
 import json
+from urllib.parse import quote
 import time
 from collections import Counter
 
@@ -191,15 +192,9 @@ async def upload_to_cloud(filepath):
     """
     Uploads to Gofile (primary) and returns a dict:
         {
-            "direct":  "https://store-xx.gofile.io/download/web/{id}/{name}",
-            "page":    "https://gofile.io/d/{id}",
-            "source":  "gofile" | "litterbox" | "error"
+            "page":   "https://gofile.io/d/{id}",
+            "source": "gofile" | "litterbox" | "error"
         }
-
-    Direct link constructed from:
-        https://{server}.gofile.io/download/web/{fileId}/{fileName}
-    where server comes from Step 1, fileId and fileName from Step 2 —
-    no extra API call needed.
     """
     filename = os.path.basename(filepath)
 
@@ -238,9 +233,9 @@ async def upload_to_cloud(filepath):
         file_id    = upload_data["data"]["id"]
         page_url   = upload_data["data"]["downloadPage"]
 
-        # Direct link pattern confirmed from file details API:
-        # https://{server}.gofile.io/download/web/{fileId}/{fileName}
-        direct_url = f"https://{server}.gofile.io/download/web/{file_id}/{filename}"
+        # Direct link: https://{server}.gofile.io/download/web/{fileId}/{fileName}
+        encoded_name = quote(filename, safe="")
+        direct_url   = f"https://{server}.gofile.io/download/web/{file_id}/{encoded_name}"
 
         return {
             "direct": direct_url,

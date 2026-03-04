@@ -61,19 +61,20 @@ async def main():
     async with Client(config.SESSION_NAME, api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
         status = None
         try:
-            try:
-                status = await app.send_message(
-                    config.CHAT_ID,
-                    f"📡 <b>[ SYSTEM ONLINE ] Encoding: {config.FILE_NAME}</b>",
-                    parse_mode=enums.ParseMode.HTML
-                )
-            except FloodWait as e:
-                await asyncio.sleep(e.value + 2)
-                status = await app.send_message(
-                    config.CHAT_ID,
-                    f"📡 <b>[ SYSTEM RECOVERY ] Encoding: {config.FILE_NAME}</b>",
-                    parse_mode=enums.ParseMode.HTML
-                )
+            status = await app.send_message(
+                config.CHAT_ID,
+                f"📡 <b>[ SYSTEM ONLINE ] Encoding: {config.FILE_NAME}</b>",
+                parse_mode=enums.ParseMode.HTML
+            )
+        except FloodWait as e:
+            await asyncio.sleep(e.value + 2)
+            status = await app.send_message(
+                config.CHAT_ID,
+                f"📡 <b>[ SYSTEM RECOVERY ] Encoding: {config.FILE_NAME}</b>",
+                parse_mode=enums.ParseMode.HTML
+            )
+        except Exception:
+            pass
 
         # 5. ENCODING EXECUTION
         cmd = [
@@ -240,15 +241,6 @@ async def main():
         except: pass
         for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT]:
             if os.path.exists(f): os.remove(f)
-
-        except Exception as e:
-            # Unhandled exception — clean up status message then re-raise
-            # so the workflow step exits non-zero and notify_failure fires
-            print(f"FATAL: {e}")
-            if status:
-                try: await status.delete()
-                except: pass
-            raise
 
 
 if __name__ == "__main__":

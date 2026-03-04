@@ -234,7 +234,8 @@ async def main():
         grid_task = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
 
         if config.RUN_VMAF:
-            vmaf_val, ssim_val = await get_vmaf(config.FILE_NAME, crop_val, width, height, duration, fps_val, app, config.CHAT_ID, status)
+            vmaf_writer = lambda payload: write_progress(loop, payload)
+            vmaf_val, ssim_val = await get_vmaf(config.FILE_NAME, crop_val, width, height, duration, fps_val, kv_writer=vmaf_writer)
         else:
             vmaf_val, ssim_val = "N/A", "N/A"
 

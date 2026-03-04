@@ -143,11 +143,88 @@ async def main():
         process.wait()
         total_mission_time = time.time() - start_time
 
-        # 6. ERROR HANDLING
+        total_mission_time = time.time() - start_time
+
+        # 6. ERROR HANDLING — retry with aformat downmix if opus channel layout failed
         if process.returncode != 0:
-            error_snippet = "".join(open(config.LOG_FILE).readlines()[-10:]) if os.path.exists(config.LOG_FILE) else "Unknown Engine Crash."
-            await app.edit_message_text(config.CHAT_ID, status.id, get_failure_ui(config.FILE_NAME, error_snippet), parse_mode=enums.ParseMode.HTML)
-            await app.send_document(config.CHAT_ID, config.LOG_FILE, caption="📑 <b>FULL MISSION LOG</b>")
+            log_text = "".join(open(config.LOG_FILE).readlines()) if os.path.exists(config.LOG_FILE) else ""
+            opus_layout_error = "Invalid channel layout" in log_text and "libopus" in log_text
+
+            if opus_layout_error:
+                await app.edit_message_text(
+                    config.CHAT_ID, status.id,
+                    "⚠️ <b>[ AUDIO RETRY ]</b> Opus channel layout incompatible — retrying with stereo downmix...",
+                    parse_mode=enums.ParseMode.HTML
+                )
+
+                # Replace audio cmd with aformat downmix before opus encode
+                retry_audio_cmd = [
+                    "-af", "aformat=channel_layouts=7.1|5.1|stereo",
+                    "-c:a", "libopus", "-b:a", config.AUDIO_BITRATE or "32k", "-vbr", "on", "-mapping_family", "255"
+                ]
+                retry_cmd = [
+                    "ffmpeg", "-i", config.SOURCE,
+                    "-map", "0:v:0",
+                    "-map", "0:a?",
+                    "-map", "0:s?",
+                    *video_filters,
+                    "-c:v", "libsvtav1",
+                    "-pix_fmt", "yuv420p10le",
+                    "-crf", str(final_crf),
+                    "-preset", str(final_preset),
+                    "-svtav1-params", svtav1_tune,
+                    "-threads", "0",
+                    *retry_audio_cmd,
+                    "-c:s", "copy",
+                    "-map_chapters", "0",
+                    "-progress", "pipe:1",
+                    "-nostats",
+                    "-y", config.FILE_NAME
+                ]
+
+                start_time        = time.time()
+                last_progress_pct = -1
+                last_update_time  = 0
+
+                with open(config.LOG_FILE, "w") as f_log:
+                    process = subprocess.Popen(
+                        retry_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True
+                    )
+                    for line in process.stdout:
+                        f_log.write(line)
+                        if config.CANCELLED:
+                            break
+                        if "out_time_ms" in line:
+                            try:
+                                curr_sec = int(line.split("=")[1]) / 1_000_000
+                                percent  = (curr_sec / duration) * 100
+                                elapsed  = time.time() - start_time
+                                speed    = curr_sec / elapsed if elapsed > 0 else 0
+                                fps      = (percent / 100 * total_frames) / elapsed if elapsed > 0 else 0
+                                eta      = (elapsed / percent) * (100 - percent) if percent > 0 else 0
+                                size_mb  = os.path.getsize(config.FILE_NAME) / (1024 * 1024) if os.path.exists(config.FILE_NAME) else 0
+                                milestone   = int(percent // 5) * 5
+                                now         = time.time()
+                                if milestone > last_progress_pct or now - last_update_time >= 30:
+                                    last_progress_pct = milestone
+                                    last_update_time  = now
+                                    scifi_ui = get_encode_ui(config.FILE_NAME, speed, fps, elapsed, eta, curr_sec, duration, percent, final_crf, final_preset, res_label, crop_label_txt, hdr_label, "Stereo Downmix", grain_label, config.AUDIO_MODE, final_audio_bitrate, size_mb)
+                                    try:
+                                        await app.edit_message_text(config.CHAT_ID, status.id, scifi_ui, parse_mode=enums.ParseMode.HTML)
+                                    except FloodWait as e:
+                                        await asyncio.sleep(e.value + 1)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                continue
+
+                process.wait()
+                total_mission_time = time.time() - start_time
+
+            if process.returncode != 0:
+                error_snippet = "".join(open(config.LOG_FILE).readlines()[-10:]) if os.path.exists(config.LOG_FILE) else "Unknown Engine Crash."
+                await app.edit_message_text(config.CHAT_ID, status.id, get_failure_ui(config.FILE_NAME, error_snippet), parse_mode=enums.ParseMode.HTML)
+                await app.send_document(config.CHAT_ID, config.LOG_FILE, caption="📑 <b>FULL MISSION LOG</b>")
             await asyncio.sleep(30)   # give user time to read the failure box
             try: await status.delete()
             except: pass

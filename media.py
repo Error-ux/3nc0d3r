@@ -188,7 +188,7 @@ def select_params(height):
 
 
 
-async def upload_to_cloud(filepath):
+async def upload_to_cloud(filepath, app=None, chat_id=None, status_msg=None):
     """
     Uploads to Gofile (primary) and returns a dict:
         {
@@ -216,15 +216,67 @@ async def upload_to_cloud(filepath):
         print(f"[Gofile] Step 1 failed: {e}")
         return await _litterbox_fallback(filepath)
 
-    # ── Step 2: Upload file ──────────────────────────────────────────────────
+    # ── Step 2: Upload file with progress ───────────────────────────────────
     try:
-        upload_proc = await asyncio.create_subprocess_exec(
+        file_size     = os.path.getsize(filepath)
+        last_edit     = 0
+        last_pct      = -1
+        upload_proc   = await asyncio.create_subprocess_exec(
             "curl", "-s",
+            "--progress-bar",
             "-F", f"file=@{filepath}",
             f"https://{server}.gofile.io/contents/uploadfile",
             stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
-        upload_out, _ = await upload_proc.communicate()
+
+        # Read stderr for curl progress while stdout accumulates JSON response
+        uploaded_bytes = 0
+        start_up       = time.time()
+
+        async def _read_progress():
+            nonlocal uploaded_bytes, last_edit, last_pct
+            async for line in upload_proc.stderr:
+                # curl --progress-bar writes lines like: "##  3.1%  ..."
+                text = line.decode("utf-8", errors="ignore").strip()
+                # parse percentage from curl progress output
+                parts = text.split()
+                for part in parts:
+                    if part.endswith("%"):
+                        try:
+                            pct = float(part.rstrip("%"))
+                            uploaded_bytes = int(file_size * pct / 100)
+                            now         = time.time()
+                            pct_crossed = int(pct // 5) * 5 > last_pct
+                            time_due    = now - last_edit >= 30
+                            if app and status_msg and (pct_crossed or time_due):
+                                last_pct  = int(pct // 5) * 5
+                                elapsed   = now - start_up
+                                speed_mbs = (uploaded_bytes / elapsed) / (1024*1024) if elapsed > 0 else 0
+                                eta       = ((file_size - uploaded_bytes) / (uploaded_bytes / elapsed)) if uploaded_bytes > 0 else 0
+                                from ui import generate_progress_bar, format_time
+                                bar = generate_progress_bar(pct)
+                                ui  = (
+                                    f"<code>┌─── ☁️ [ GOFILE.UPLINK ] ───────────┐\n"
+                                    f"│                                    \n"
+                                    f"│ 📂 FILE: {os.path.basename(filepath)}\n"
+                                    f"│ 📊 PROG: {bar} {pct:.1f}%\n"
+                                    f"│ 📦 SIZE: {uploaded_bytes/(1024*1024):.1f} / {file_size/(1024*1024):.1f} MB\n"
+                                    f"│ ⚡ SPEED: {speed_mbs:.2f} MB/s\n"
+                                    f"│ ⏳ ETA: {format_time(eta)}\n"
+                                    f"│                                    \n"
+                                    f"└────────────────────────────────────┘</code>"
+                                )
+                                try:
+                                    from pyrogram import enums as _enums
+                                    await app.edit_message_text(chat_id, status_msg.id, ui, parse_mode=_enums.ParseMode.HTML)
+                                    last_edit = now
+                                except Exception:
+                                    pass
+                        except ValueError:
+                            pass
+
+        await asyncio.gather(_read_progress(), asyncio.shield(upload_proc.wait()))
+        upload_out = await upload_proc.stdout.read()
         upload_data   = json.loads(upload_out.decode())
 
         if upload_data.get("status") != "ok":

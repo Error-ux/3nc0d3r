@@ -93,11 +93,16 @@ jobs:
           # Direct/CDN Logic (Uses aria2c directly to prevent yt-dlp timeouts)
           else
             if [ -z "$CUSTOM" ]; then
-                # Extract filename from URL, strip query strings, and decode URL encoding
-                CLEAN_NAME=$(basename "$URL" | sed 's/\?.*//' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
+                # For m3u8, use parent directory name (e.g. /show-name/playlist.m3u8 → show-name)
+                # For direct files, use the filename itself
+                if [[ "$URL" == *.m3u8* ]] || [[ "$URL" == *m3u8* ]]; then
+                    CLEAN_NAME=$(dirname "$URL" | xargs basename | sed 's/\?.*//' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
+                else
+                    CLEAN_NAME=$(basename "$URL" | sed 's/\?.*//' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
+                fi
                 # Ensure it has a video extension
                 if [[ "$CLEAN_NAME" != *.mkv ]] && [[ "$CLEAN_NAME" != *.mp4 ]] && [[ "$CLEAN_NAME" != *.webm ]]; then
-                    FN="video.mkv"
+                    FN="${CLEAN_NAME}.mkv"
                 else
                     FN="$CLEAN_NAME"
                 fi

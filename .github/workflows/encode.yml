@@ -33,7 +33,7 @@ on:
         default: 'true'
 
 jobs:
-  # PHASE 1: SMART DOWNLOADER
+  # ── PHASE 1: DOWNLOAD ──────────────────────────────────────────────────────
   download_phase:
     runs-on: ubuntu-latest
     concurrency:
@@ -80,28 +80,22 @@ jobs:
           CUSTOM: ${{ github.event.inputs.custom_name }}
         run: |
           URL="${{ github.event.inputs.video_url }}"
-          
-          # Telegram Logic
+
           if [[ "$URL" == tg_file:* ]] || [[ "$URL" == https://t.me/* ]]; then
             python3 tg_handler.py
-          # Magnet Safety
           elif [[ "$URL" == magnet:* ]]; then
             echo "❌ ERROR: Magnet links are disabled." && exit 1
-          # Direct/CDN Logic (Uses aria2c directly to prevent yt-dlp timeouts)
           else
             if [ -z "$CUSTOM" ]; then
-                # Extract filename from URL, strip query strings, and decode URL encoding
-                CLEAN_NAME=$(basename "$URL" | sed 's/\?.*//' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
-                # Ensure it has a video extension
-                if [[ "$CLEAN_NAME" != *.mkv ]] && [[ "$CLEAN_NAME" != *.mp4 ]] && [[ "$CLEAN_NAME" != *.webm ]]; then
-                    FN="video.mkv"
-                else
-                    FN="$CLEAN_NAME"
-                fi
+              CLEAN_NAME=$(basename "$URL" | sed 's/\?.*//' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
+              if [[ "$CLEAN_NAME" != *.mkv ]] && [[ "$CLEAN_NAME" != *.mp4 ]] && [[ "$CLEAN_NAME" != *.webm ]]; then
+                FN="video.mkv"
+              else
+                FN="$CLEAN_NAME"
+              fi
             else
-                FN="${CUSTOM}.mkv"
+              FN="${CUSTOM}.mkv"
             fi
-            
             echo "📥 Downloading Direct Link: $URL"
             aria2c -x 16 -s 16 -k 1M --user-agent="Mozilla/5.0" --console-log-level=warn --summary-interval=10 -o "source.mkv" "$URL"
             echo "$FN" > tg_fname.txt
@@ -111,7 +105,7 @@ jobs:
         id: get_name
         run: echo "NAME=$(cat tg_fname.txt)" >> $GITHUB_OUTPUT
 
-      - name: 📦 Upload Artifact
+      - name: 📦 Upload Source Artifact
         uses: actions/upload-artifact@v4
         with:
           name: payload-${{ github.run_id }}
@@ -121,7 +115,7 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-  # PHASE 2: PARALLEL ENCODER
+  # ── PHASE 2: ENCODE ────────────────────────────────────────────────────────
   encode_phase:
     needs: download_phase
     runs-on: ubuntu-latest
@@ -140,7 +134,7 @@ jobs:
           tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
 
-      - name: 📥 Fetch Payload
+      - name: 📥 Fetch Source Artifact
         uses: actions/download-artifact@v4
         with:
           name: payload-${{ github.run_id }}
@@ -158,7 +152,7 @@ jobs:
             echo "✅ Session copied successfully."
           fi
 
-      - name: 🚀 Start Parallel Encoder
+      - name: 🚀 Encode
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
@@ -177,3 +171,63 @@ jobs:
           CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
           CF_KV_TOKEN: ${{ secrets.CF_KV_TOKEN }}
         run: python3 main.py
+
+      - name: 📦 Upload Encoded Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: encoded-${{ github.run_id }}
+          path: ${{ needs.download_phase.outputs.final_name }}
+          retention-days: 1
+          compression-level: 0
+
+  # ── PHASE 3: UPLOAD TO TELEGRAM ───────────────────────────────────────────
+  upload_phase:
+    needs: [download_phase, encode_phase]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: 🛠 Install Upload Tools
+        run: pip install -r requirements.txt
+
+      - name: 📥 Fetch Encoded Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: encoded-${{ github.run_id }}
+
+      - name: 💾 Restore Session Cache
+        uses: actions/cache@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-master
+
+      - name: 🔑 Authorize Bot Session
+        run: |
+          if [ -f "tg_session_dir/tg_dl_session.session" ]; then
+            cp tg_session_dir/tg_dl_session.session ./enc_session.session
+            echo "✅ Session copied successfully."
+          fi
+
+      - name: 📡 Upload to Telegram
+        env:
+          API_ID: ${{ secrets.TG_API_ID }}
+          API_HASH: ${{ secrets.TG_API_HASH }}
+          BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          SESSION_NAME: "enc_session"
+          USER_RES: ${{ github.event.inputs.res_choice }}
+          USER_CRF: ${{ github.event.inputs.custom_crf }}
+          USER_PRESET: ${{ github.event.inputs.custom_preset }}
+          USER_GRAIN: ${{ github.event.inputs.film_grain }}
+          AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
+          AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
+          RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
+          FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+          CF_KV_TOKEN: ${{ secrets.CF_KV_TOKEN }}
+        run: python3 upload.py

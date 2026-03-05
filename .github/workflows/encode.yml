@@ -105,8 +105,21 @@ jobs:
                 FN="${CUSTOM}.mkv"
             fi
             
-            echo "📥 Downloading Direct Link: $URL"
-            aria2c -x 16 -s 16 -k 1M --user-agent="Mozilla/5.0" --console-log-level=warn --summary-interval=10 -o "source.mkv" "$URL"
+            # Detect HLS/m3u8 and resolve via yt-dlp, then download fast with aria2c
+            if [[ "$URL" == *.m3u8* ]] || [[ "$URL" == *m3u8* ]]; then
+                echo "🔍 HLS detected — resolving direct URL via yt-dlp..."
+                DIRECT_URL=$(yt-dlp --get-url --user-agent "Mozilla/5.0" "$URL" 2>/dev/null | head -1)
+                if [ -n "$DIRECT_URL" ]; then
+                    echo "🔗 Resolved! Handing off to aria2c for fast download..."
+                    aria2c -x 16 -s 16 -k 1M --user-agent="Mozilla/5.0" --console-log-level=warn --summary-interval=10 -o "source.mkv" "$DIRECT_URL"
+                else
+                    echo "⚠️ Could not resolve direct URL, falling back to yt-dlp..."
+                    yt-dlp --user-agent "Mozilla/5.0" --merge-output-format mkv -o "source.mkv" "$URL"
+                fi
+            else
+                echo "📥 Downloading Direct Link: $URL"
+                aria2c -x 16 -s 16 -k 1M --user-agent="Mozilla/5.0" --console-log-level=warn --summary-interval=10 -o "source.mkv" "$URL"
+            fi
             echo "$FN" > tg_fname.txt
           fi
 

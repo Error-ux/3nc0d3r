@@ -32,6 +32,10 @@ on:
         description: 'Run VMAF?'
         default: 'true'
 
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   # PHASE 1: SMART DOWNLOADER
   download_phase:
@@ -209,3 +213,21 @@ jobs:
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
         run: python3 main.py
+      - name: 🗑 Delete Payload Artifact
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const artifacts = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: `payload-${context.runId}`,
+            });
+            for (const artifact of artifacts.data.artifacts) {
+              console.log(`Deleting artifact: ${artifact.name} (${artifact.id})`);
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: artifact.id,
+              });
+            }

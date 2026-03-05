@@ -7,11 +7,10 @@ import time
 import shutil
 from pyrogram import Client, enums
 from pyrogram.errors import FloodWait
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
-from media import get_video_info, get_crop_params, select_params, async_generate_grid, get_vmaf, upload_to_cloud
-from ui import get_encode_ui, format_time, upload_progress, get_failure_ui
+from media import get_video_info, get_crop_params, select_params
+from ui import get_encode_ui, format_time, get_failure_ui
 
 
 # ---------------------------------------------------------------------------
@@ -158,96 +157,17 @@ async def main():
             await app.send_document(config.CHAT_ID, config.LOG_FILE, caption="📑 <b>FULL MISSION LOG</b>")
             return
 
-        # 7. POST-PROCESSING (Remux)
-        await app.edit_message_text(config.CHAT_ID, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>", parse_mode=enums.ParseMode.HTML)
-        fixed_file = f"FIXED_{config.FILE_NAME}"
-        subprocess.run(["mkvmerge", "-o", fixed_file, config.FILE_NAME, "--no-video", "--no-audio", "--no-subtitles", "--no-attachments", config.SOURCE])
-        if os.path.exists(fixed_file):
-            os.remove(config.FILE_NAME)
-            os.rename(fixed_file, config.FILE_NAME)
-
-        # 8. METRICS + GOFILE UPLOAD (concurrent)
-        final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
-
+        # Post-encode steps (remux, gofile, TG send) are handled by upload.py (Phase 3).
+        # main.py only signals completion so the runner knows encoding succeeded.
         await app.edit_message_text(
             config.CHAT_ID, status.id,
-            "☁️ <b>[ SYSTEM.CLOUD ] Uploading to Gofile...</b>",
+            f"✅ <b>[ ENCODE COMPLETE ]</b> <code>{config.FILE_NAME}</code>\n"
+            f"<i>Handing off to upload phase...</i>",
             parse_mode=enums.ParseMode.HTML
         )
 
-        grid_task  = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
-        cloud_task = asyncio.create_task(upload_to_cloud(config.FILE_NAME))
-
-        if config.RUN_VMAF:
-            vmaf_val, ssim_val = await get_vmaf(config.FILE_NAME, crop_val, width, height, duration, fps_val)
-        else:
-            vmaf_val, ssim_val = "N/A", "N/A"
-
-        await grid_task
-        cloud = await cloud_task  # dict: {direct, page, source}
-
-        # 9. Build inline buttons from cloud result
-        btn_row = []
-        if cloud["source"] == "gofile":
-            if cloud.get("page"):
-                btn_row.append(InlineKeyboardButton("☁️ Gofile", url=cloud["page"]))
-            if cloud.get("direct"):
-                btn_row.append(InlineKeyboardButton("🔗 Direct", url=cloud["direct"]))
-        elif cloud["source"] == "litterbox" and cloud.get("direct"):
-            btn_row.append(InlineKeyboardButton("☁️ Litterbox", url=cloud["direct"]))
-        buttons = InlineKeyboardMarkup([btn_row]) if btn_row else None
-
-        # 10. FINAL UPLINK
-        if final_size > 2000:
-            await app.edit_message_text(
-                config.CHAT_ID, status.id,
-                "⚠️ <b>[ SIZE OVERFLOW ]</b> File too large for Telegram. Cloud link below.",
-                parse_mode=enums.ParseMode.HTML,
-                reply_markup=buttons
-            )
-            return
-
-        photo_msg = None
-        if os.path.exists(config.SCREENSHOT):
-            photo_msg = await app.send_photo(
-                config.CHAT_ID, config.SCREENSHOT,
-                caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{config.FILE_NAME}</code>",
-                parse_mode=enums.ParseMode.HTML
-            )
-
-        crop_label_report = " | Cropped" if crop_val else ""
-        report = (
-            f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
-            f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
-            f"⏱ <b>TIME:</b> <code>{format_time(total_mission_time)}</code>\n"
-            f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>\n"
-            f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
-            f"🛠 <b>SPECS:</b>\n"
-            f"└ <b>Preset:</b> {final_preset} | <b>CRF:</b> {final_crf}\n"
-            f"└ <b>Video:</b> {res_label}{crop_label_report} | {hdr_label}{grain_label}\n"
-            f"└ <b>Audio:</b> {config.AUDIO_MODE.upper()} @ {final_audio_bitrate}"
-        )
-
-        # Reset upload progress trackers
-        import ui as _ui; _ui.last_up_pct = -1; _ui.last_up_update = 0; _ui.up_start_time = 0
-
-        await app.edit_message_text(config.CHAT_ID, status.id, "🚀 <b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>", parse_mode=enums.ParseMode.HTML)
-
-        await app.send_document(
-            chat_id=config.CHAT_ID,
-            document=config.FILE_NAME,
-            caption=report,
-            parse_mode=enums.ParseMode.HTML,
-            reply_to_message_id=photo_msg.id if photo_msg else None,
-            reply_markup=buttons,
-            progress=upload_progress,
-            progress_args=(app, config.CHAT_ID, status, config.FILE_NAME)
-        )
-
-        # CLEANUP
-        try: await status.delete()
-        except: pass
-        for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT]:
+        # Cleanup source — encoded file is kept for the upload artifact
+        for f in [config.SOURCE, config.LOG_FILE]:
             if os.path.exists(f): os.remove(f)
 
 

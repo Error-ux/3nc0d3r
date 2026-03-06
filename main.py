@@ -22,6 +22,7 @@ DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET", "")
 
 def push_progress(payload: dict):
     if not DASHBOARD_URL or not DASHBOARD_SECRET:
+        print(f"[dashboard] missing vars: URL={bool(DASHBOARD_URL)} SECRET={bool(DASHBOARD_SECRET)}")
         return
     try:
         body = json.dumps({**payload, "run_id": config.GITHUB_RUN_ID}).encode()
@@ -35,6 +36,9 @@ def push_progress(payload: dict):
             method="POST",
         )
         urllib.request.urlopen(req, timeout=5)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        print(f"[dashboard] push failed: {e} — response: {body}")
     except Exception as e:
         print(f"[dashboard] push failed: {e}")
 

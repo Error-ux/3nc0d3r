@@ -51,7 +51,20 @@ async def main():
     session_path = os.path.join(session_dir, "tg_dl_session")
 
     try:
-        async with Client(session_path, api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
+        app = Client(session_path, api_id=api_id, api_hash=api_hash, bot_token=bot_token)
+        for _attempt in range(5):
+            try:
+                await app.start()
+                break
+            except FloodWait as e:
+                wait_secs = e.value + 5
+                print(f"⏳ FloodWait on auth: waiting {wait_secs}s (attempt {_attempt + 1}/5)")
+                await asyncio.sleep(wait_secs)
+        else:
+            print("❌ Could not authorize with Telegram after 5 attempts.")
+            sys.exit(1)
+
+        try:
             status = await app.send_message(
                 chat_id, 
                 "📡 <b>[ SYSTEM.INIT ] Establishing Downlink...</b>", 
@@ -126,6 +139,9 @@ async def main():
             
             with open("tg_fname.txt", "w", encoding="utf-8") as f:
                 f.write(final_name)
+
+        finally:
+            await app.stop()
 
     except Exception as e:
         print(f"FATAL ERROR during download: {e}")

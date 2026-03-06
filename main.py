@@ -316,16 +316,16 @@ async def main():
 
         crop_label_report = " | Cropped" if crop_val else ""
         report = (
-            f"<b>MISSION ACCOMPLISHED</b>\n\n"
-            f"<b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
-            f"<b>TIME:</b> <code>{format_time(total_mission_time)}</code>\n"
-            f"<b>SIZE:</b> <code>{final_size:.2f} MB</code>\n"
-            f"<b>DURATION:</b> <code>{format_time(duration)}</code>\n"
-            f"<b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
-            f"<b>SPECS:</b>\n"
-            f"Preset: {final_preset} | CRF: {final_crf}\n"
-            f"Video: {res_label}{crop_label_report} | {hdr_label}{grain_label}\n"
-            f"Audio: {config.AUDIO_MODE.upper()} @ {final_audio_bitrate}"
+            f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
+            f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
+            f"⏱ <b>TIME:</b> <code>{format_time(total_mission_time)}</code>\n"
+            f"⏳<b>DURATION:</b> <code>{format_time(duration)}</code>\n"
+            f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>\n"
+            f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
+            f"🛠 <b>SPECS:</b>\n"
+            f"└ Preset: {final_preset} | CRF: {final_crf}\n"
+            f"└ Video: {res_label}{crop_label_report} | {hdr_label}{grain_label}\n"
+            f"└ Audio: {config.AUDIO_MODE.upper()} @ {final_audio_bitrate}"
         )
 
         import ui as _ui; _ui.last_up_pct = -1; _ui.last_up_update = 0; _ui.up_start_time = 0

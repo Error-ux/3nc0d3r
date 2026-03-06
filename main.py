@@ -1,12 +1,12 @@
 import asyncio
+import json
 import os
 import subprocess
 import time
 import shutil
-from datetime import datetime, timezone, timedelta
+import urllib.request
 from pyrogram import Client, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pymongo import MongoClient
 
 import config
 from media import get_video_info, get_crop_params, select_params, async_generate_grid, get_vmaf, upload_to_cloud
@@ -14,42 +14,32 @@ from ui import format_time, upload_progress, get_failure_ui
 
 
 # ---------------------------------------------------------------------------
-# MONGODB REPORTER
-# Writes directly to Atlas via pymongo. Non-blocking via executor.
+# DASHBOARD REPORTER
+# POSTs progress to CF Pages Function → D1. Fire-and-forget, never blocks.
 # ---------------------------------------------------------------------------
-MONGO_URI = os.getenv("MONGO_URI", "")
-MONGO_DB  = os.getenv("MONGO_DB",  "av1")
-MONGO_COL = os.getenv("MONGO_COL", "jobs")
-
-_mongo_client = None
-
-def get_col():
-    global _mongo_client
-    if not MONGO_URI:
-        return None
-    if _mongo_client is None:
-        _mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    return _mongo_client[MONGO_DB][MONGO_COL]
-
+DASHBOARD_URL    = os.getenv("DASHBOARD_URL", "").rstrip("/")
+DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET", "")
 
 def push_progress(payload: dict):
-    col = get_col()
-    if col is None:
+    if not DASHBOARD_URL or not DASHBOARD_SECRET:
         return
     try:
-        is_done   = payload.get("phase") in ("done", "error")
-        expire_at = datetime.now(timezone.utc) + timedelta(hours=24 if is_done else 6)
-        col.update_one(
-            {"run_id": payload["run_id"]},
-            {"$set": {**payload, "updated_at": datetime.now(timezone.utc), "expire_at": expire_at}},
-            upsert=True,
+        body = json.dumps({**payload, "run_id": config.GITHUB_RUN_ID}).encode()
+        req  = urllib.request.Request(
+            f"{DASHBOARD_URL}/api/progress",
+            data=body,
+            headers={
+                "Content-Type":  "application/json",
+                "Authorization": f"Bearer {DASHBOARD_SECRET}",
+            },
+            method="POST",
         )
+        urllib.request.urlopen(req, timeout=5)
     except Exception as e:
-        print(f"[mongo] push failed: {e}")
+        print(f"[dashboard] push failed: {e}")
 
 
 async def push_async(payload: dict):
-    payload["run_id"] = config.GITHUB_RUN_ID
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, push_progress, payload)
 
@@ -116,7 +106,9 @@ async def main():
     last_push_pct  = -1
 
     with open(config.LOG_FILE, "w") as f_log:
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True
+        )
 
         for line in process.stdout:
             f_log.write(line)
@@ -157,7 +149,10 @@ async def main():
         # 7. ERROR
         if process.returncode != 0:
             error_snippet = "".join(open(config.LOG_FILE).readlines()[-20:]) if os.path.exists(config.LOG_FILE) else "Unknown crash."
-            await push_async({"phase": "error", "file": config.FILE_NAME, "elapsed": int(total_mission_time), "error_snippet": error_snippet})
+            await push_async({
+                "phase": "error", "file": config.FILE_NAME,
+                "elapsed": int(total_mission_time), "error_snippet": error_snippet,
+            })
             await app.send_message(config.CHAT_ID, get_failure_ui(config.FILE_NAME, error_snippet), parse_mode=enums.ParseMode.HTML)
             await app.send_document(config.CHAT_ID, config.LOG_FILE, caption="📑 <b>FULL ENCODE LOG</b>", parse_mode=enums.ParseMode.HTML)
             return
@@ -204,7 +199,7 @@ async def main():
             btn_row.append(InlineKeyboardButton("☁️ Litterbox", url=cloud["direct"]))
         buttons = InlineKeyboardMarkup([btn_row]) if btn_row else None
 
-        # 12. FINAL TG — one message per job, sent only after encode is done
+        # 12. FINAL TG — one message per job, only after encode is done
         if final_size > 2000:
             await app.send_message(
                 config.CHAT_ID,
@@ -234,8 +229,6 @@ async def main():
             )
 
     # CLEANUP
-    if _mongo_client:
-        _mongo_client.close()
     for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT]:
         if os.path.exists(f): os.remove(f)
 

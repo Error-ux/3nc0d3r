@@ -48,7 +48,19 @@ async def main():
     
     session_dir = "tg_session_dir"
     os.makedirs(session_dir, exist_ok=True)
-    session_path = os.path.join(session_dir, "tg_dl_session")
+
+    # Derive lane from run number so each concurrency lane gets its own
+    # Telegram session — independent FloodWait timers, no cross-lane blocking.
+    run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
+    last_digit = run_number % 10
+    if last_digit in (0, 3, 6, 9):
+        lane = "A"
+    elif last_digit in (1, 4, 7):
+        lane = "B"
+    else:
+        lane = "C"
+    print(f"Session lane: {lane} (run #{run_number})")
+    session_path = os.path.join(session_dir, f"tg_dl_session_{lane}")
 
     try:
         app = Client(session_path, api_id=api_id, api_hash=api_hash, bot_token=bot_token)

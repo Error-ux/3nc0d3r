@@ -3,6 +3,7 @@ import os
 import subprocess
 import time
 import shutil
+import psutil
 from pyrogram import Client, enums
 from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -164,6 +165,30 @@ async def tg_edit(tg_state: dict, tg_ready: asyncio.Event, text: str, reply_mark
 
 
 # ---------------------------------------------------------------------------
+# RESOURCE MONITOR — logs CPU + RAM every 5s during encoding
+# ---------------------------------------------------------------------------
+async def resource_monitor(stop_event: asyncio.Event, stats: dict, interval: int = 5):
+    proc = psutil.Process(os.getpid())
+    # First call initialises the baseline; discard the result
+    psutil.cpu_percent(interval=None)
+    proc.cpu_percent(interval=None)
+    while not stop_event.is_set():
+        await asyncio.sleep(interval)
+        sys_cpu  = psutil.cpu_percent(interval=None)
+        proc_cpu = proc.cpu_percent(interval=None)
+        ram_mb   = proc.memory_info().rss / 1024 ** 2
+        sys_ram  = psutil.virtual_memory()
+        stats["proc_cpu"] = proc_cpu
+        stats["sys_cpu"]  = sys_cpu
+        stats["ram_mb"]   = ram_mb
+        stats["sys_ram"]  = sys_ram.percent
+        print(
+            f"[MONITOR] PID CPU: {proc_cpu:5.1f}% | SYS CPU: {sys_cpu:5.1f}% | "
+            f"PID RAM: {ram_mb:6.1f}MB | SYS RAM: {sys_ram.percent:5.1f}%"
+        )
+
+
+# ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 async def main():
@@ -270,6 +295,11 @@ async def main():
         stderr=asyncio.subprocess.STDOUT,
     )
 
+    # Start resource monitor alongside encoding
+    monitor_stop  = asyncio.Event()
+    monitor_stats = {}
+    monitor_task  = asyncio.create_task(resource_monitor(monitor_stop, monitor_stats))
+
     start_time        = time.time()
     last_progress_pct = -1
     last_update_time  = 0
@@ -305,6 +335,14 @@ async def main():
                         crop_label_txt, hdr_label, grain_label,
                         config.AUDIO_MODE, final_audio_bitrate, size_mb
                     )
+                    if monitor_stats:
+                        scifi_ui += (
+                            f"\n\n🖥 <b>SYSTEM</b>\n"
+                            f"└ CPU: <code>{monitor_stats['proc_cpu']:.1f}%</code> pid | "
+                            f"<code>{monitor_stats['sys_cpu']:.1f}%</code> sys\n"
+                            f"└ RAM: <code>{monitor_stats['ram_mb']:.0f}MB</code> pid | "
+                            f"<code>{monitor_stats['sys_ram']:.1f}%</code> sys"
+                        )
                     last_ui_text = scifi_ui   # always keep the freshest snapshot
 
                     if pct_crossed or time_due:
@@ -317,6 +355,8 @@ async def main():
                     continue
 
     await process.wait()
+    monitor_stop.set()
+    await monitor_task
     total_mission_time = time.time() - start_time
 
     # If TG is still waiting out a FloodWait, block here until it connects.

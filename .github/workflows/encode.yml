@@ -43,6 +43,9 @@ on:
       audio_type:
         description: 'Audio Type Override (Auto/Sub/Dual/Tri/Multi)'
         default: 'Auto'
+      content_type:
+        description: 'Content Type (Anime/Donghua/Hentai/HMV/AMV/custom)'
+        default: 'Anime'
       sub_tracks:
         description: 'Subtitle Track Labels'
         default: ''
@@ -258,8 +261,9 @@ jobs:
           ANIME_NAME:   ${{ github.event.inputs.anime_name }}
           SEASON:       ${{ github.event.inputs.season }}
           EPISODE:      ${{ github.event.inputs.episode }}
-          AUDIO_TYPE:   ${{ github.event.inputs.audio_type }}
-          SUB_TRACKS:   ${{ github.event.inputs.sub_tracks }}
+          AUDIO_TYPE:    ${{ github.event.inputs.audio_type }}
+          CONTENT_TYPE:  ${{ github.event.inputs.content_type }}
+          SUB_TRACKS:    ${{ github.event.inputs.sub_tracks }}
           AUDIO_TRACKS: ${{ github.event.inputs.audio_tracks }}
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
         run: python3 main.py

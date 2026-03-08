@@ -209,11 +209,13 @@ jobs:
           fi
 
       - name: 💾 Restore Session Cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: tg_session_dir
-          key: tg-session-${{ steps.lane.outputs.name }}
-          restore-keys: tg-session-
+          key: tg-session-${{ steps.lane.outputs.name }}-${{ github.run_id }}
+          restore-keys: |
+            tg-session-${{ steps.lane.outputs.name }}-
+            tg-session-
 
       - name: 🔑 Authorize Bot Session
         run: |
@@ -268,6 +270,16 @@ jobs:
             cp enc_session.session "tg_session_dir/enc_session_${LANE}.session"
             echo "✅ Bot session saved: enc_session_${LANE}.session"
           fi
+
+      # Use a run_id-scoped key so parallel jobs on the same lane never overwrite
+      # each other's cache. The Restore step uses `restore-keys` to still pick up
+      # the latest entry from any prior run on this lane.
+      - name: 🗃 Cache Bot Session
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}-${{ github.run_id }}
 
       - name: 🗑 Delete Payload Artifact
         if: always()

@@ -169,9 +169,14 @@ async def tg_edit(tg_state: dict, tg_ready: asyncio.Event, text: str, reply_mark
 # ---------------------------------------------------------------------------
 async def resource_monitor(stop_event: asyncio.Event, stats: dict, interval: int = 5):
     proc = psutil.Process(os.getpid())
-    # First call initialises the baseline; discard the result
+    # Discard first readings to establish baseline
     psutil.cpu_percent(interval=None)
     proc.cpu_percent(interval=None)
+
+    # Wait one interval first so ffmpeg has time to spawn before we baseline its children
+    await asyncio.sleep(interval)
+
+    # Now baseline all children (ffmpeg will exist by now)
     for c in proc.children(recursive=True):
         try: c.cpu_percent(interval=None)
         except psutil.NoSuchProcess: pass
@@ -353,9 +358,9 @@ async def main():
                     if monitor_stats:
                         scifi_ui += (
                             f"\n\n🖥 <b>SYSTEM</b>\n"
-                            f"└ CPU: <code>{monitor_stats['proc_cpu']:.1f}%</code> pid | "
+                            f"└ CPU: <code>{monitor_stats['proc_cpu']:.1f}%</code> proc | "
                             f"<code>{monitor_stats['sys_cpu']:.1f}%</code> sys\n"
-                            f"└ RAM: <code>{monitor_stats['ram_mb']:.0f}MB</code> pid | "
+                            f"└ RAM: <code>{monitor_stats['ram_mb']:.0f}MB</code> proc | "
                             f"<code>{monitor_stats['sys_ram']:.1f}%</code> sys"
                         )
                     last_ui_text = scifi_ui   # always keep the freshest snapshot

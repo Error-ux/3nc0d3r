@@ -223,7 +223,9 @@ async def main():
     final_audio_bitrate = "32k"
 
     # -- SVT-AV1 PARAMETERS --
-    svtav1_tune = "tune=0:film-grain=0:enable-overlays=1:aq-mode=1"
+    # pin=0 is required for GitHub Actions (virtualized VMs don't honour CPU affinity).
+    # Without it SVT-AV1 tries to pin threads to specific cores and hangs indefinitely.
+    svtav1_tune = "tune=0:film-grain=0:enable-overlays=1:aq-mode=1:pin=0"
 
     # UI Labels
     hdr_label      = "HDR10" if is_hdr else "SDR"

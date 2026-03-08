@@ -1,0 +1,131 @@
+name: TG Rename Pipeline
+run-name: "🏷️ [RENAME]: ${{ inputs.ui_title || inputs.anime_name || 'File' }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ui_title:
+        description: 'Dashboard Title (auto-set by bridge)'
+      video_url:
+        description: 'Telegram file  (tg_file:<id>|<name>  or  https://t.me/...)'
+        required: true
+      anime_name:
+        description: 'Anime Name'
+        required: true
+      season:
+        description: 'Season Number'
+        default: '1'
+      episode:
+        description: 'Episode Number'
+        default: '1'
+      audio_type:
+        description: 'Audio Type (Auto / Sub / Dual / Tri / Multi)'
+        default: 'Auto'
+      content_type:
+        description: 'Content Type (Anime / Donghua / Hentai / HMV / AMV / custom)'
+        default: 'Anime'
+      sub_tracks:
+        description: 'Subtitle Track Labels  e.g. English, Arabic'
+        default: ''
+      audio_tracks:
+        description: 'Audio Track Labels  e.g. Japanese, English (Dub)'
+        default: ''
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  rename_mission:
+    runs-on: ubuntu-latest
+
+    # Mirror the same concurrency lanes used by encode.yml so TG sessions
+    # are shared correctly and FloodWaits don't collide across workflows.
+    concurrency:
+      group: >-
+        ${{
+          (!contains(inputs.video_url, 't.me') && !contains(inputs.video_url, 'tg_file:')) && github.run_id ||
+          (
+            (endsWith(github.run_number, '0') || endsWith(github.run_number, '3') || endsWith(github.run_number, '6') || endsWith(github.run_number, '9')) && 'tg-lane-A' ||
+            (endsWith(github.run_number, '1') || endsWith(github.run_number, '4') || endsWith(github.run_number, '7')) && 'tg-lane-B' ||
+            'tg-lane-C'
+          )
+        }}
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: 🛠 Install Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y mkvtoolnix ffmpeg
+          pip install pyrogram tgcrypto
+
+      - name: 📁 Setup Session Dir
+        run: mkdir -p tg_session_dir
+
+      - name: 🔀 Resolve Lane
+        id: lane
+        run: |
+          LAST=$(( ${{ github.run_number }} % 10 ))
+          if [[ "$LAST" == "0" || "$LAST" == "3" || "$LAST" == "6" || "$LAST" == "9" ]]; then
+            echo "name=lane-A" >> $GITHUB_OUTPUT
+          elif [[ "$LAST" == "1" || "$LAST" == "4" || "$LAST" == "7" ]]; then
+            echo "name=lane-B" >> $GITHUB_OUTPUT
+          else
+            echo "name=lane-C" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 💾 Restore Session Cache
+        uses: actions/cache@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}
+          restore-keys: tg-session-
+
+      - name: 🔑 Authorize Bot Session
+        run: |
+          LANE="${{ steps.lane.outputs.name }}"
+          for SESSION_FILE in \
+            "tg_session_dir/tg_dl_session_${LANE}.session" \
+            "tg_session_dir/enc_session_${LANE}.session" \
+            "tg_session_dir/enc_session.session"; do
+            if [ -f "$SESSION_FILE" ]; then
+              cp "$SESSION_FILE" ./tg_session_dir/active.session
+              echo "✅ Session restored: $SESSION_FILE"
+              break
+            fi
+          done
+
+      - name: 🏷️ Run Rename Mission
+        env:
+          TG_API_ID:    ${{ secrets.TG_API_ID }}
+          TG_API_HASH:  ${{ secrets.TG_API_HASH }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
+          VIDEO_URL:    ${{ github.event.inputs.video_url }}
+          ANIME_NAME:   ${{ github.event.inputs.anime_name }}
+          SEASON:       ${{ github.event.inputs.season }}
+          EPISODE:      ${{ github.event.inputs.episode }}
+          AUDIO_TYPE:   ${{ github.event.inputs.audio_type }}
+          CONTENT_TYPE: ${{ github.event.inputs.content_type }}
+          SUB_TRACKS:   ${{ github.event.inputs.sub_tracks }}
+          AUDIO_TRACKS: ${{ github.event.inputs.audio_tracks }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: python3 tg_rename.py
+
+      - name: 💾 Save Session Cache
+        if: always()
+        run: |
+          LANE="${{ steps.lane.outputs.name }}"
+          for SESSION_FILE in \
+            "tg_session_dir/tg_dl_session_${LANE}.session" \
+            "tg_session_dir/enc_session_${LANE}.session"; do
+            if [ -f "$SESSION_FILE" ]; then
+              echo "✅ Session preserved: $SESSION_FILE"
+            fi
+          done

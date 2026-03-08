@@ -169,42 +169,20 @@ async def tg_edit(tg_state: dict, tg_ready: asyncio.Event, text: str, reply_mark
 # ---------------------------------------------------------------------------
 async def resource_monitor(stop_event: asyncio.Event, stats: dict, interval: int = 5):
     proc = psutil.Process(os.getpid())
-    # Discard first readings to establish baseline
-    psutil.cpu_percent(interval=None)
-    proc.cpu_percent(interval=None)
-
-    # Wait one interval first so ffmpeg has time to spawn before we baseline its children
-    await asyncio.sleep(interval)
-
-    # Now baseline all children (ffmpeg will exist by now)
-    for c in proc.children(recursive=True):
-        try: c.cpu_percent(interval=None)
-        except psutil.NoSuchProcess: pass
+    psutil.cpu_percent(interval=None)  # baseline
 
     while not stop_event.is_set():
         await asyncio.sleep(interval)
         sys_cpu = psutil.cpu_percent(interval=None)
-
-        # Sum CPU + RAM across python process and all children (ffmpeg, etc.)
-        total_cpu = proc.cpu_percent(interval=None)
-        total_ram = proc.memory_info().rss
-        for child in proc.children(recursive=True):
-            try:
-                total_cpu += child.cpu_percent(interval=None)
-                total_ram += child.memory_info().rss
-            except psutil.NoSuchProcess:
-                pass
-
-        ram_mb  = total_ram / 1024 ** 2
         sys_ram = psutil.virtual_memory()
+        ram_mb  = proc.memory_info().rss / 1024 ** 2
 
-        stats["proc_cpu"] = total_cpu
-        stats["sys_cpu"]  = sys_cpu
-        stats["ram_mb"]   = ram_mb
-        stats["sys_ram"]  = sys_ram.percent
+        stats["sys_cpu"] = sys_cpu
+        stats["ram_mb"]  = ram_mb
+        stats["sys_ram"] = sys_ram.percent
         print(
-            f"[MONITOR] PROC CPU: {total_cpu:6.1f}% | SYS CPU: {sys_cpu:5.1f}% | "
-            f"PROC RAM: {ram_mb:6.1f}MB | SYS RAM: {sys_ram.percent:5.1f}%"
+            f"[MONITOR] CPU: {sys_cpu:5.1f}% | "
+            f"RAM: {ram_mb:6.1f}MB proc | {sys_ram.percent:5.1f}% sys"
         )
 
 
@@ -270,7 +248,7 @@ async def main():
     # -- SVT-AV1 PARAMETERS --
     # pin=0 is required for GitHub Actions (virtualized VMs don't honour CPU affinity).
     # Without it SVT-AV1 tries to pin threads to specific cores and hangs indefinitely.
-    svtav1_tune = "tune=0:film-grain=0:enable-overlays=1:aq-mode=1:pin=0"
+    svtav1_tune = "tune=0:film-grain=0:enable-overlays=1:aq-mode=1:pin=0:lp=4"
 
     # UI Labels
     hdr_label      = "HDR10" if is_hdr else "SDR"
@@ -358,9 +336,8 @@ async def main():
                     if monitor_stats:
                         scifi_ui += (
                             f"\n\n🖥 <b>SYSTEM</b>\n"
-                            f"└ CPU: <code>{monitor_stats['proc_cpu']:.1f}%</code> proc | "
-                            f"<code>{monitor_stats['sys_cpu']:.1f}%</code> sys\n"
-                            f"└ RAM: <code>{monitor_stats['ram_mb']:.0f}MB</code> proc | "
+                            f"└ CPU: <code>{monitor_stats['sys_cpu']:.1f}%</code>\n"
+                            f"└ RAM: <code>{monitor_stats['ram_mb']:.0f}MB</code> / "
                             f"<code>{monitor_stats['sys_ram']:.1f}%</code> sys"
                         )
                     last_ui_text = scifi_ui   # always keep the freshest snapshot

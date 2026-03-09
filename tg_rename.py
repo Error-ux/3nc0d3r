@@ -63,12 +63,11 @@ THUMB_AT     = 0.20
 
 # ── LANE RESOLUTION ───────────────────────────────────────────────────────────
 
+_ALL_LANES = [chr(ord("A") + i) for i in range(20)]  # A–T
+
 def resolve_lane() -> str:
     run_number = int(os.getenv("GITHUB_RUN_NUMBER", "0"))
-    d = run_number % 10
-    if d in (0, 3, 6, 9): return "A"
-    if d in (1, 4, 7):    return "B"
-    return "C"
+    return _ALL_LANES[run_number % 20]
 
 # ── TELEGRAM HELPERS ──────────────────────────────────────────────────────────
 

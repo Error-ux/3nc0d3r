@@ -30,29 +30,37 @@ from rename import resolve_output_name, format_track_report
 # Sets tg_ready when the client is connected and initial message is sent.
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# LANE RESOLUTION — derive A/B/C from GITHUB_RUN_NUMBER to match tg_handler.py
+# LANE RESOLUTION — derive A–T (20 lanes) from GITHUB_RUN_NUMBER to match tg_handler.py
+# 20 lanes comfortably supports 15+ simultaneous encodes with no session collisions.
 # ---------------------------------------------------------------------------
+ALL_LANES = [chr(ord("A") + i) for i in range(20)]  # ["A", "B", ..., "T"]
+
+def _resolve_lane(run_number: int) -> str:
+    return ALL_LANES[run_number % 20]
+
 def _resolve_session_names() -> list[str]:
     """
     Return an ordered list of session names to try, most-preferred first.
-    The lane-specific session is tried first; the legacy name is the fallback
-    so the first run after a deploy still works even if only the old cache exists.
+    Own lane is tried first (enc + tg_dl), then every other lane as cross-lane
+    fallbacks, then the legacy bare session last.
+    With 20 lanes this gives up to 41 sessions before giving up.
     """
     run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
-    last_digit = run_number % 10
-    if last_digit in (0, 3, 6, 9):
-        lane = "A"
-    elif last_digit in (1, 4, 7):
-        lane = "B"
-    else:
-        lane = "C"
+    lane = _resolve_lane(run_number)
     print(f"Encoder session lane: {lane} (run #{run_number})")
-    # Lane-specific first, then the legacy tg_dl copy, then the bare fallback
-    return [
-        f"tg_session_dir/enc_session_{lane}",
-        f"tg_session_dir/tg_dl_session_{lane}",
-        config.SESSION_NAME,
-    ]
+
+    other_lanes = [l for l in ALL_LANES if l != lane]
+    sessions = []
+    # Own lane — highest priority
+    sessions.append(f"tg_session_dir/enc_session_{lane}")
+    sessions.append(f"tg_session_dir/tg_dl_session_{lane}")
+    # Cross-lane fallbacks (enc first, then tg_dl for each)
+    for other in other_lanes:
+        sessions.append(f"tg_session_dir/enc_session_{other}")
+        sessions.append(f"tg_session_dir/tg_dl_session_{other}")
+    # Legacy bare session as final fallback
+    sessions.append(config.SESSION_NAME)
+    return sessions
 
 
 async def connect_telegram(tg_state: dict, tg_ready: asyncio.Event, label: str):

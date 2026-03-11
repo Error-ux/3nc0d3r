@@ -137,11 +137,10 @@ def build_output_name(
     Format:  [Anime] [S02-E07] Anime Name [1080p] [Dual].mkv
     """
     safe_name    = re.sub(r'[<>:"/\\|?*\n\r\t]', "", anime_name).strip()
-    safe_ctype   = re.sub(r'[<>:"/\\|?*\n\r\t]', "", content_type).strip() or "Anime"
     season_str   = f"S{int(season):02d}"
     episode_str  = f"E{int(episode):02d}"
 
-    return f"[{safe_ctype}] [{season_str}-{episode_str}] {safe_name} [{quality}] [{audio_type}].{ext}"
+    return f"[{season_str}-{episode_str}] {safe_name} [{quality}] [{audio_type}].{ext}"
 
 
 # ---------------------------------------------------------------------------

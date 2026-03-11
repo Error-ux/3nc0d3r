@@ -263,6 +263,31 @@ async def main():
     grain_label    = " | Grain: 0"
     crop_label_txt = " | Cropped" if crop_val else ""
 
+    # -- DEMO / PARTIAL ENCODE --
+    # When DEMO_DURATION is set, override the progress-tracking duration and
+    # inject -ss / -t into the FFmpeg command so only that slice is encoded.
+    demo_mode     = bool(config.DEMO_DURATION and config.DEMO_DURATION.strip())
+    demo_start    = config.DEMO_START.strip() if config.DEMO_START else "0"
+    demo_duration = config.DEMO_DURATION.strip() if demo_mode else None
+
+    if demo_mode:
+        # Convert demo_start and demo_duration to seconds for progress math.
+        def _hms_to_sec(val: str) -> float:
+            parts = val.split(":")
+            if len(parts) == 3:
+                return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+            return float(val)
+
+        demo_start_sec    = _hms_to_sec(demo_start)
+        demo_duration_sec = _hms_to_sec(demo_duration)
+        # Clamp so we don't exceed the source
+        demo_duration_sec = min(demo_duration_sec, duration - demo_start_sec)
+        # Override duration so progress % is calculated against the slice only
+        duration   = demo_duration_sec
+        print(f"[DEMO MODE] Encoding {demo_duration_sec:.0f}s from {demo_start_sec:.0f}s")
+
+    demo_label = f" | ⚡ DEMO {demo_duration}s" if demo_mode else ""
+
     # 4. LAUNCH TG AUTH AS A BACKGROUND TASK — encoding starts immediately.
     # If FloodWait fires, connect_telegram sleeps it out on its own while
     # FFmpeg keeps running. Progress messages are sent the instant TG is ready.
@@ -275,7 +300,10 @@ async def main():
 
     # 5. ENCODING EXECUTION (starts immediately, does not wait for TG)
     cmd = [
-        "ffmpeg", "-i", config.SOURCE,
+        "ffmpeg",
+        # Input-side seeking (fast; placed BEFORE -i)
+        *([ "-ss", demo_start, "-t", demo_duration ] if demo_mode else []),
+        "-i", config.SOURCE,
         "-map", "0:v:0",
         "-map", "0:a?",
         "-map", "0:s?",
@@ -342,6 +370,7 @@ async def main():
                         config.AUDIO_MODE, final_audio_bitrate, size_mb,
                         cpu=monitor_stats.get("sys_cpu"),
                         ram=monitor_stats.get("sys_ram"),
+                        demo_label=demo_label,
                     )
                     last_ui_text = scifi_ui   # always keep the freshest snapshot
 
@@ -467,6 +496,10 @@ async def main():
             else f"{config.AUDIO_MODE.upper()} @ {final_audio_bitrate}"
         )
         content_line = f"└ Type: {config.CONTENT_TYPE}\n" if config.CONTENT_TYPE else ""
+        demo_report_line = (
+            f"⚡ <b>DEMO MODE:</b> <code>{demo_duration}s from {demo_start}</code>\n"
+            if demo_mode else ""
+        )
         report = (
             f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
             f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
@@ -479,6 +512,7 @@ async def main():
             f"└ Video: {res_label}{crop_label_report} | {hdr_label}{grain_label}\n"
             f"└ Audio: {audio_mode_line}\n"
             f"{content_line}"
+            f"{demo_report_line}"
             f"\n{track_report}"
             f"{user_track_notes}"
         )

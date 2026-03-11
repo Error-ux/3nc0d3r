@@ -63,9 +63,10 @@ def get_download_ui(percent, speed, size_mb, elapsed, eta):
         f"└────────────────────────────────────┘</code>"
     )
 
-def get_encode_ui(file_name, speed, fps, elapsed, eta, curr_sec, duration, percent, final_crf, final_preset, res_label, crop_label, hdr_label, grain_label, u_audio, u_bitrate, size, cpu=None, ram=None):
+def get_encode_ui(file_name, speed, fps, elapsed, eta, curr_sec, duration, percent, final_crf, final_preset, res_label, crop_label, hdr_label, grain_label, u_audio, u_bitrate, size, cpu=None, ram=None, demo_label=""):
     bar = generate_progress_bar(percent)
     sys_line = f"│ 🖥️ SYSTEM: CPU {cpu:.1f}% | RAM {ram:.1f}%\n" if cpu is not None and ram is not None else ""
+    demo_line = f"│ ⚡ DEMO MODE:{demo_label}\n" if demo_label else ""
     return (
         f"<code>┌─── 🛰️ [ SYSTEM.ENCODE.PROCESS ] ───┐\n"
         f"│                                    \n"
@@ -81,6 +82,7 @@ def get_encode_ui(file_name, speed, fps, elapsed, eta, curr_sec, duration, perce
         f"│ 🔊 AUDIO: {u_audio.upper()} @ {u_bitrate}\n"
         f"│ 📦 SIZE: {size:.2f} MB\n"
         f"│                                    \n"
+        f"{demo_line}"
         f"{sys_line}"
         f"└────────────────────────────────────┘</code>"
     )

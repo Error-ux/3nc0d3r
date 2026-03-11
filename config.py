@@ -46,5 +46,12 @@ CONTENT_TYPE = os.getenv("CONTENT_TYPE", "Anime")  # Anime | Donghua | Hentai | 
 SUB_TRACKS   = os.getenv("SUB_TRACKS",   "")       # e.g. "English, Arabic"
 AUDIO_TRACKS = os.getenv("AUDIO_TRACKS", "")       # e.g. "Japanese, English (Dub)"
 
+# ---------- DEMO / PARTIAL ENCODING ----------
+# Set DEMO_DURATION to a non-empty value (e.g. "120") to encode only that
+# many seconds of the source.  DEMO_START is the seek position (default "0").
+# Leave DEMO_DURATION blank (or unset) to encode the full file as normal.
+DEMO_START    = os.getenv("DEMO_START",    "0")   # seconds or HH:MM:SS
+DEMO_DURATION = os.getenv("DEMO_DURATION", "")    # seconds; blank = full encode
+
 # ---------- GLOBAL STATE ----------
 CANCELLED = False

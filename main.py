@@ -535,10 +535,13 @@ async def main():
         # 8. METRICS + CLOUD UPLOAD (concurrent)
         final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
 
-        await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.CLOUD ] Uploading to Gofile...</b>")
+        grid_task = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
 
-        grid_task  = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
-        cloud_task = asyncio.create_task(upload_to_cloud(config.FILE_NAME, app, config.CHAT_ID, status))
+        if config.RUN_UPLOAD:
+            await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.CLOUD ] Uploading to Gofile...</b>")
+            cloud_task = asyncio.create_task(upload_to_cloud(config.FILE_NAME, app, config.CHAT_ID, status))
+        else:
+            cloud_task = None
 
         if config.RUN_VMAF:
             vmaf_val, ssim_val = await get_vmaf(config.FILE_NAME, crop_val, width, height, duration, fps_val)
@@ -546,7 +549,7 @@ async def main():
             vmaf_val, ssim_val = "N/A", "N/A"
 
         await grid_task
-        cloud = await cloud_task   # dict: {direct, page, source}
+        cloud = await cloud_task if cloud_task else {"direct": None, "page": None, "source": "disabled"}
 
         # 9. Build inline buttons from cloud result
         btn_row = []

@@ -256,14 +256,44 @@ async def main():
             await _a.stop()
         return
 
-    # 3. RENAME — build structured output filename if ANIME_NAME is set
-    if config.ANIME_NAME and config.ANIME_NAME.strip():
-        # Use the user's chosen resolution for the quality label in the filename.
-        # USER_RES is e.g. "720" when the user picked 720p; empty = Original (use source height).
+    # 3. RENAME — build structured output filename if ANIME_NAME is set.
+    # If ANIME_NAME is blank, attempt to auto-parse it from the source URL's
+    # filename= query param (or path) using anitopy as a fallback.
+    anime_name = config.ANIME_NAME.strip() if config.ANIME_NAME else ""
+
+    if not anime_name:
+        # Try to extract a filename from the source URL for anitopy to parse
+        try:
+            from urllib.parse import urlparse, parse_qs, unquote
+            import anitopy
+
+            parsed_url = urlparse(config.SOURCE)
+            qs = parse_qs(parsed_url.query)
+
+            # Prefer explicit filename= or file= param (CDN signed URLs)
+            raw_filename = (
+                qs.get("filename", [None])[0]
+                or qs.get("file",     [None])[0]
+                or unquote(parsed_url.path.split("/")[-1])
+            )
+
+            if raw_filename:
+                aniparse = anitopy.parse(raw_filename)
+                anime_name   = aniparse.get("anime_title", "").strip()
+                if not config.SEASON or not config.SEASON.strip():
+                    config.SEASON  = str(aniparse.get("anime_season",  "1") or "1")
+                if not config.EPISODE or not config.EPISODE.strip():
+                    config.EPISODE = str(aniparse.get("episode_number", "1") or "1")
+                if anime_name:
+                    print(f"[rename] anitopy auto-detected → {anime_name}  S{config.SEASON}E{config.EPISODE}")
+        except Exception as e:
+            print(f"[rename] anitopy fallback failed: {e}")
+
+    if anime_name:
         rename_height = int(config.USER_RES) if (config.USER_RES and config.USER_RES.strip().isdigit()) else height
         resolved_name, audio_type_label, audio_tracks, sub_tracks = resolve_output_name(
             source               = config.SOURCE,
-            anime_name           = config.ANIME_NAME,
+            anime_name           = anime_name,
             season               = config.SEASON,
             episode              = config.EPISODE,
             height               = rename_height,

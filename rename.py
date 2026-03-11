@@ -169,16 +169,20 @@ def format_track_report(audio_tracks: list[dict], sub_tracks: list[dict]) -> str
     lines.append("")
 
     # ── Subtitles ──────────────────────────────────────────────────────────
+    PGS_CODECS = {"hdmv_pgs_bitmap", "pgssub"}
     lines.append("💬 <b>SUBTITLE TRACKS:</b>")
     if sub_tracks:
         for i, t in enumerate(sub_tracks, 1):
-            label = t["title"] if t["title"] else t["lang"].upper()
-            codec = t["codec"].upper()
+            label  = t["title"] if t["title"] else t["lang"].upper()
+            codec  = t["codec"].upper()
+            is_pgs = t.get("codec", "").lower() in PGS_CODECS
             flags: list[str] = []
             if t["default"]:
                 flags.append("Default")
             if t["forced"]:
                 flags.append("Forced")
+            if is_pgs:
+                flags.append("⛔ Removed")
             flag_str = f" ({', '.join(flags)})" if flags else ""
             lines.append(f"  └ [{i}] {label} | {codec}{flag_str}")
     else:
@@ -216,3 +220,53 @@ def resolve_output_name(
     quality  = detect_quality(height)
     filename = build_output_name(anime_name, season, episode, quality, audio_type, content_type, ext)
     return filename, audio_type, audio_tracks, sub_tracks
+
+
+# ---------------------------------------------------------------------------
+# LANGUAGE CODE → HUMAN-READABLE NAME
+# ---------------------------------------------------------------------------
+
+# ISO 639-2/B codes (the ones ffprobe reports) mapped to English display names.
+# Covers the vast majority of subtitle languages seen in anime/media releases.
+_LANG_MAP: dict[str, str] = {
+    "afr": "Afrikaans",  "alb": "Albanian",   "amh": "Amharic",
+    "ara": "Arabic",     "arm": "Armenian",   "aze": "Azerbaijani",
+    "baq": "Basque",     "bel": "Belarusian", "ben": "Bengali",
+    "bos": "Bosnian",    "bul": "Bulgarian",  "bur": "Burmese",
+    "cat": "Catalan",    "chi": "Chinese",    "zho": "Chinese",
+    "hrv": "Croatian",   "cze": "Czech",      "ces": "Czech",
+    "dan": "Danish",     "dut": "Dutch",      "nld": "Dutch",
+    "eng": "English",    "est": "Estonian",   "fin": "Finnish",
+    "fre": "French",     "fra": "French",     "geo": "Georgian",
+    "kat": "Georgian",   "ger": "German",     "deu": "German",
+    "gre": "Greek",      "ell": "Greek",      "guj": "Gujarati",
+    "heb": "Hebrew",     "hin": "Hindi",      "hun": "Hungarian",
+    "ice": "Icelandic",  "isl": "Icelandic",  "ind": "Indonesian",
+    "ita": "Italian",    "jpn": "Japanese",   "kan": "Kannada",
+    "kaz": "Kazakh",     "khm": "Khmer",      "kor": "Korean",
+    "kur": "Kurdish",    "lav": "Latvian",    "lit": "Lithuanian",
+    "mac": "Macedonian", "mkd": "Macedonian", "mal": "Malayalam",
+    "mlt": "Maltese",    "mar": "Marathi",    "may": "Malay",
+    "msa": "Malay",      "mon": "Mongolian",  "nep": "Nepali",
+    "nor": "Norwegian",  "pan": "Punjabi",    "per": "Persian",
+    "fas": "Persian",    "pol": "Polish",     "por": "Portuguese",
+    "rum": "Romanian",   "ron": "Romanian",   "rus": "Russian",
+    "srp": "Serbian",    "sin": "Sinhala",    "slo": "Slovak",
+    "slk": "Slovak",     "slv": "Slovenian",  "spa": "Spanish",
+    "swa": "Swahili",    "swe": "Swedish",    "tam": "Tamil",
+    "tel": "Telugu",     "tha": "Thai",       "tur": "Turkish",
+    "ukr": "Ukrainian",  "urd": "Urdu",       "uzb": "Uzbek",
+    "vie": "Vietnamese", "wel": "Welsh",      "cym": "Welsh",
+    "yid": "Yiddish",    "zul": "Zulu",
+}
+
+
+def lang_code_to_name(code: str) -> str:
+    """
+    Convert an ISO 639-2 language code (e.g. 'jpn', 'eng') to its
+    English display name (e.g. 'Japanese', 'English').
+    Falls back to the uppercased code if not found in the table.
+    """
+    if not code or code.lower() in ("und", ""):
+        return "Unknown"
+    return _LANG_MAP.get(code.lower(), code.upper())

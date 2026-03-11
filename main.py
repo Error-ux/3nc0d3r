@@ -11,7 +11,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import config
 from media import get_video_info, get_crop_params, select_params, async_generate_grid, get_vmaf, upload_to_cloud
 from rename import lang_code_to_name
-from ui import get_encode_ui, format_time, upload_progress, get_failure_ui
+from ui import get_encode_ui, format_time, upload_progress, get_failure_ui, get_cancelled_ui
 from rename import resolve_output_name, format_track_report
 
 
@@ -173,6 +173,40 @@ async def tg_edit(tg_state: dict, tg_ready: asyncio.Event, text: str, reply_mark
         pass
 
 
+
+# ---------------------------------------------------------------------------
+# FAILURE NOTIFIER — sends failure message + log to TG (best-effort)
+# ---------------------------------------------------------------------------
+async def tg_notify_failure(tg_state: dict, tg_ready: asyncio.Event,
+                            file_name: str, reason: str):
+    """
+    Edit the status message to show the failure UI and, if a log file exists,
+    attach it as a document.  Safe to call even if TG never fully connected.
+    """
+    app    = tg_state.get("app")
+    status = tg_state.get("status")
+    if not app or not status:
+        print(f"[TG-FAIL] TG unavailable — failure reason: {reason}")
+        return
+    try:
+        await app.edit_message_text(
+            config.CHAT_ID, status.id,
+            get_failure_ui(file_name, reason),
+            parse_mode=enums.ParseMode.HTML,
+        )
+    except Exception as e:
+        print(f"[TG-FAIL] Could not edit status message: {e}")
+    if os.path.exists(config.LOG_FILE):
+        try:
+            await app.send_document(
+                config.CHAT_ID, config.LOG_FILE,
+                caption="<b>FULL MISSION LOG</b>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception as e:
+            print(f"[TG-FAIL] Could not send log document: {e}")
+
+
 # ---------------------------------------------------------------------------
 # RESOURCE MONITOR — logs CPU + RAM every 5s during encoding
 # ---------------------------------------------------------------------------
@@ -211,6 +245,15 @@ async def main():
         duration, width, height, is_hdr, total_frames, channels, fps_val = get_video_info()
     except Exception as e:
         print(f"Metadata error: {e}")
+        # TG not up yet — spin up a minimal client just to fire the alert
+        _tg_s: dict = {}
+        _tg_r = asyncio.Event()
+        await connect_telegram(_tg_s, _tg_r, config.FILE_NAME)
+        await tg_notify_failure(_tg_s, _tg_r, config.FILE_NAME,
+                                f"Metadata extraction failed: {e}")
+        _a = _tg_s.get("app")
+        if _a:
+            await _a.stop()
         return
 
     # 3. RENAME — build structured output filename if ANIME_NAME is set
@@ -386,6 +429,11 @@ async def main():
             f_log.write(line)
             if config.CANCELLED:
                 process.terminate()
+                elapsed_so_far = time.time() - start_time
+                await tg_edit(
+                    tg_state, tg_ready,
+                    get_cancelled_ui(config.FILE_NAME, format_time(elapsed_so_far)),
+                )
                 break
 
             if "out_time_ms" in line:
@@ -463,13 +511,7 @@ async def main():
                 if os.path.exists(config.LOG_FILE)
                 else "Unknown Engine Crash."
             )
-            await app.edit_message_text(
-                config.CHAT_ID, status.id,
-                get_failure_ui(config.FILE_NAME, error_snippet),
-                parse_mode=enums.ParseMode.HTML,
-            )
-            await app.send_document(config.CHAT_ID, config.LOG_FILE, caption="<b>FULL MISSION LOG</b>",
-                                    parse_mode=enums.ParseMode.HTML)
+            await tg_notify_failure(tg_state, tg_ready, config.FILE_NAME, error_snippet)
             return
 
         # 7. POST-PROCESSING (Remux)
@@ -579,6 +621,17 @@ async def main():
         for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT]:
             if os.path.exists(f): os.remove(f)
 
+    except Exception as exc:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[FATAL] Unexpected error: {exc}\n{tb}")
+        elapsed_total = time.time() - start_time
+        reason = (
+            f"Unexpected error after {format_time(elapsed_total)}:\n"
+            f"{type(exc).__name__}: {exc}\n\n"
+            f"{tb[-300:]}"
+        )
+        await tg_notify_failure(tg_state, tg_ready, config.FILE_NAME, reason)
     finally:
         if app:
             await app.stop()

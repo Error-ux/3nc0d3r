@@ -270,36 +270,7 @@ jobs:
           python3 main.py 2>&1 | tee encode.log
 
       # ─────────────────────────────────────────────────────────────────────
-      # STEP 3: UPLOAD
-      # ─────────────────────────────────────────────────────────────────────
-      - name: ☁️ Upload
-        id: upload
-        if: success()
-        env:
-          API_ID: ${{ secrets.TG_API_ID }}
-          API_HASH: ${{ secrets.TG_API_HASH }}
-          BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          SESSION_NAME: "enc_session"
-          GITHUB_RUN_NUMBER: ${{ github.run_number }}
-          RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
-          RUN_UPLOAD: ${{ github.event.inputs.run_upload }}
-          AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
-          AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
-          SUB_TRACKS: ${{ github.event.inputs.sub_tracks }}
-          AUDIO_TRACKS: ${{ github.event.inputs.audio_tracks }}
-          CONTENT_TYPE: ${{ github.event.inputs.content_type }}
-          USER_CRF: ${{ github.event.inputs.custom_crf }}
-          USER_PRESET: ${{ github.event.inputs.custom_preset }}
-          FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
-        run: |
-          set -o pipefail
-          FILE_NAME=$(cat tg_fname.txt 2>/dev/null || echo "${{ github.event.inputs.custom_name }}.mkv")
-          export FILE_NAME
-          python3 upload.py 2>&1 | tee upload.log
-
-      # ─────────────────────────────────────────────────────────────────────
-      # STEP 4: NOTIFY FAILURE (runs only if any step above failed)
+      # STEP 3: NOTIFY FAILURE (runs only if any step above failed)
       # ─────────────────────────────────────────────────────────────────────
       - name: 🚨 Notify Failure
         if: failure()
@@ -308,7 +279,6 @@ jobs:
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
           ENCODE_OUTCOME: ${{ steps.encode.outcome }}
-          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
         run: |
           FILE_NAME=$(cat tg_fname.txt 2>/dev/null || echo "${{ github.event.inputs.ui_title || 'Unknown' }}")
 
@@ -321,10 +291,6 @@ jobs:
             FAILED_PHASE="ENCODE"
             LOG_FILE="encode.log"
             PHASE_ICON="⚙️"
-          elif [ "$UPLOAD_OUTCOME" = "failure" ]; then
-            FAILED_PHASE="UPLOAD"
-            LOG_FILE="upload.log"
-            PHASE_ICON="☁️"
           else
             FAILED_PHASE="UNKNOWN"
             LOG_FILE=""

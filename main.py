@@ -11,7 +11,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import config
 from media import get_video_info, get_crop_params, select_params, async_generate_thumbnail, get_vmaf, upload_to_cloud
 from rename import lang_code_to_name
-from ui import get_encode_ui, format_time, upload_progress, get_failure_ui, get_cancelled_ui
+from ui import get_encode_ui, format_time, upload_progress, get_failure_ui, get_cancelled_ui, get_vmaf_ui
 from rename import resolve_output_name, format_track_report
 
 
@@ -587,7 +587,11 @@ async def main():
             cloud_task = None
 
         if config.RUN_VMAF:
-            vmaf_val, ssim_val = await get_vmaf(config.FILE_NAME, crop_val, width, height, duration, fps_val)
+            async def vmaf_tg_writer(payload):
+                ui = get_vmaf_ui(payload["vmaf_percent"], payload["fps"], payload["eta"])
+                await tg_edit(tg_state, tg_ready, ui)
+
+            vmaf_val, ssim_val = await get_vmaf(config.FILE_NAME, crop_val, width, height, duration, fps_val, kv_writer=vmaf_tg_writer)
         else:
             vmaf_val, ssim_val = "N/A", "N/A"
 

@@ -87,19 +87,23 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/apt-cache
-          key: apt-tools-v1-${{ runner.os }}
+          key: apt-tools-v2-${{ runner.os }}
 
       - name: 🛠 Install Tools
         run: |
           if [ "${{ steps.apt-cache.outputs.cache-hit }}" = "true" ]; then
             echo "📦 Restoring apt tools from cache..."
             sudo cp /tmp/apt-cache/bin/aria2c /usr/local/bin/aria2c 2>/dev/null || true
+            sudo cp /tmp/apt-cache/bin/mkvmerge /usr/local/bin/mkvmerge 2>/dev/null || true
+            sudo cp /tmp/apt-cache/bin/mkvpropedit /usr/local/bin/mkvpropedit 2>/dev/null || true
             sudo ldconfig
           else
             echo "📥 Installing apt tools..."
-            sudo apt-get update && sudo apt-get install -y aria2
+            sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix
             mkdir -p /tmp/apt-cache/bin
             cp $(which aria2c) /tmp/apt-cache/bin/
+            cp $(which mkvmerge) /tmp/apt-cache/bin/
+            cp $(which mkvpropedit) /tmp/apt-cache/bin/
           fi
           if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
             echo "📥 Installing Python packages..."

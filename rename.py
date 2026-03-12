@@ -225,6 +225,23 @@ def parse_from_filename(raw_filename: str) -> dict | None:
     anime_type = str(p.get("anime_type",    "") or "").lower()
     is_special = bool(special_keywords & {ep_type, anime_type})
 
+    # Fallback: anitopy misses "SP03" and "[Judas]-style" "- S03" specials.
+    # An explicit SP prefix always wins; "- S\d+" is a special only when a
+    # season was already detected (so S03 isn't mistaken for a lone season tag).
+    if not is_special:
+        # Explicit SP prefix: SP03, SP3, [SP03], etc.
+        sp_m = re.search(r'\bSP(\d{1,3})\b', raw_filename, re.IGNORECASE)
+        if sp_m:
+            is_special = True
+            episode    = int(sp_m.group(1))
+        # "- S03" / " S03" style when a separate season (S1/S2…) is already known
+        elif season > 0:
+            s_m = re.search(r'[-\s]S(\d{2,3})(?=\s|$|\[|\.)', raw_filename)
+            # Only treat as special if this number doesn't match the already-parsed season
+            if s_m and int(s_m.group(1)) != season:
+                is_special = True
+                episode    = int(s_m.group(1))
+
     print(
         f"[rename] anitopy → {anime_name!r}  "
         f"S{season:02d}{'SP' if is_special else 'E'}{episode:02d}"

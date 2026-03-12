@@ -87,28 +87,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/apt-cache
-          key: apt-aria2-mkvtoolnix-curl-${{ runner.os }}
+          key: apt-tools-v1-${{ runner.os }}
 
       - name: 🛠 Install Tools
         run: |
           if [ "${{ steps.apt-cache.outputs.cache-hit }}" = "true" ]; then
             echo "📦 Restoring apt tools from cache..."
             sudo cp /tmp/apt-cache/bin/aria2c /usr/local/bin/aria2c 2>/dev/null || true
-            sudo cp /tmp/apt-cache/bin/mkvmerge /usr/local/bin/mkvmerge 2>/dev/null || true
-            sudo cp /tmp/apt-cache/bin/mkvinfo /usr/local/bin/mkvinfo 2>/dev/null || true
-            sudo cp /tmp/apt-cache/bin/mkvextract /usr/local/bin/mkvextract 2>/dev/null || true
-            sudo cp /tmp/apt-cache/lib/* /usr/local/lib/ 2>/dev/null || true
             sudo ldconfig
           else
             echo "📥 Installing apt tools..."
-            sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl tesseract-ocr tesseract-ocr-jpn tesseract-ocr-eng
-            mkdir -p /tmp/apt-cache/bin /tmp/apt-cache/lib
+            sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix
+            mkdir -p /tmp/apt-cache/bin
             cp $(which aria2c) /tmp/apt-cache/bin/
-            cp $(which mkvmerge) /tmp/apt-cache/bin/
-            cp $(which mkvinfo) /tmp/apt-cache/bin/
-            cp $(which mkvextract) /tmp/apt-cache/bin/
-            # Cache shared libs for mkvtoolnix
-            ldd $(which mkvmerge) | grep "=> /" | awk '{print $3}' |               grep -v "libstdc++\|libc\|libm\|libgcc\|libpthread\|libdl\|librt" |               xargs -I{} cp {} /tmp/apt-cache/lib/ 2>/dev/null || true
           fi
           if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
             echo "📥 Installing Python packages..."
@@ -148,10 +139,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tg_session_dir
-          key: tg-session-${{ steps.lane.outputs.name }}-${{ github.run_id }}
-          restore-keys: |
-            tg-session-${{ steps.lane.outputs.name }}-
-            tg-session-
+          key: tg-session-${{ steps.lane.outputs.name }}
 
       - name: 🔑 Authorize Bot Session
         run: |
@@ -331,4 +319,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: tg_session_dir
-          key: tg-session-${{ steps.lane.outputs.name }}-${{ github.run_id }}
+          key: tg-session-${{ steps.lane.outputs.name }}

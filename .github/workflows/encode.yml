@@ -195,17 +195,13 @@ jobs:
           else
             if [ -z "$CUSTOM" ]; then
               # Check filename= or file= query param first (CDN/signed URLs)
-              CLEAN_NAME=$(python3 -c "
-import sys, urllib.parse
-url = sys.argv[1]
-qs  = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-fn  = (qs.get("filename") or qs.get("file") or [None])[0]
-if fn:
-    print(urllib.parse.unquote(fn))
-else:
-    path = urllib.parse.urlparse(url).path
-    print(urllib.parse.unquote(path.split("/")[-1]))
-" "$URL")
+              CLEAN_NAME=$(echo "$URL" | grep -oP '(?<=[?&]filename=)[^&]+' | python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))" 2>/dev/null)
+              if [ -z "$CLEAN_NAME" ]; then
+                CLEAN_NAME=$(echo "$URL" | grep -oP '(?<=[?&]file=)[^&]+' | python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))" 2>/dev/null)
+              fi
+              if [ -z "$CLEAN_NAME" ]; then
+                CLEAN_NAME=$(python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(urllib.parse.urlparse(sys.argv[1]).path.split('/')[-1]))" "$URL")
+              fi
               if [[ "$CLEAN_NAME" != *.mkv ]] && [[ "$CLEAN_NAME" != *.mp4 ]] && [[ "$CLEAN_NAME" != *.webm ]]; then
                 FN="${CLEAN_NAME}.mkv"
               else

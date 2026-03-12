@@ -87,33 +87,35 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/apt-cache
-          key: apt-aria2-mkvtoolnix-curl-${{ runner.os }}
+          key: apt-tools-mkvtoolnix-official-v3-${{ runner.os }}
 
       - name: 🛠 Install Tools
         run: |
           if [ "${{ steps.apt-cache.outputs.cache-hit }}" = "true" ]; then
             echo "📦 Restoring apt tools from cache..."
-            sudo cp /tmp/apt-cache/bin/aria2c /usr/local/bin/aria2c 2>/dev/null || true
-            sudo cp /tmp/apt-cache/bin/mkvmerge /usr/local/bin/mkvmerge 2>/dev/null || true
-            sudo cp /tmp/apt-cache/bin/mkvinfo /usr/local/bin/mkvinfo 2>/dev/null || true
-            sudo cp /tmp/apt-cache/bin/mkvextract /usr/local/bin/mkvextract 2>/dev/null || true
-            sudo cp /tmp/apt-cache/lib/* /usr/local/lib/ 2>/dev/null || true
+            sudo rsync -a /tmp/apt-cache/usr/ /usr/ 2>/dev/null || true
             sudo ldconfig
           else
             echo "📥 Installing apt tools..."
-            # Add official MKVToolNix repo (apt default is too old, missing libmatroska.so.7)
+            # Official MKVToolNix repo — Ubuntu apt ships an old version missing libmatroska.so.7
             sudo apt-get install -y gnupg wget curl
             wget -q https://mkvtoolnix.download/gpg-pub-myriam.asc -O /tmp/mkvtoolnix.asc
             sudo gpg --dearmor -o /usr/share/keyrings/mkvtoolnix.gpg /tmp/mkvtoolnix.asc
             echo "deb [arch=amd64 signed-by=/usr/share/keyrings/mkvtoolnix.gpg] https://mkvtoolnix.download/ubuntu/ $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/mkvtoolnix.list
             sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix tesseract-ocr tesseract-ocr-jpn tesseract-ocr-eng tesseract-ocr-chi-sim tesseract-ocr-chi-tra
-            mkdir -p /tmp/apt-cache/bin /tmp/apt-cache/lib
-            cp $(which aria2c) /tmp/apt-cache/bin/
-            cp $(which mkvmerge) /tmp/apt-cache/bin/
-            cp $(which mkvinfo) /tmp/apt-cache/bin/
-            cp $(which mkvextract) /tmp/apt-cache/bin/
-            # Cache shared libs for mkvtoolnix
-            ldd $(which mkvmerge) | grep "=> /" | awk '{print $3}' |               grep -v "libstdc++\|libc\|libm\|libgcc\|libpthread\|libdl\|librt" |               xargs -I{} cp {} /tmp/apt-cache/lib/ 2>/dev/null || true
+            # Cache entire /usr/bin and /usr/lib entries for installed tools
+            mkdir -p /tmp/apt-cache/usr/bin /tmp/apt-cache/usr/lib
+            for bin in aria2c mkvmerge mkvextract mkvinfo mkvpropedit tesseract; do
+              src=$(which $bin 2>/dev/null) && cp "$src" /tmp/apt-cache/usr/bin/ || true
+            done
+            # Copy all libs these binaries depend on (including libmatroska, libebml, etc.)
+            for bin in mkvmerge mkvextract aria2c tesseract; do
+              ldd $(which $bin 2>/dev/null) 2>/dev/null | grep "=> /" | awk '{print $3}' | while read lib; do
+                [ -f "$lib" ] && cp --preserve=links "$lib" /tmp/apt-cache/usr/lib/ 2>/dev/null || true
+              done
+            done
+            # Also copy any libmatroska / libebml / libpugixml directly
+            find /usr/lib /usr/local/lib -name "libmatroska*" -o -name "libebml*" -o -name "libpugixml*" 2>/dev/null |               xargs -I{} cp --preserve=links {} /tmp/apt-cache/usr/lib/ 2>/dev/null || true
           fi
           if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
             echo "📥 Installing Python packages..."

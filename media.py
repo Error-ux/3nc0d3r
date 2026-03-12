@@ -36,22 +36,17 @@ def get_video_info():
     return duration, width, height, is_hdr, total_frames, channels, fps_val
 
 
-async def async_generate_grid(duration, target_file):
+async def async_generate_thumbnail(duration, target_file):
     loop = asyncio.get_event_loop()
-    def sync_grid():
-        interval      = duration / 10
-        select_filter = (
-            "select='" +
-            "+".join([f"between(t,{i*interval}-0.1,{i*interval}+0.1)" for i in range(1, 10)]) +
-            "',setpts=N/FRAME_RATE/TB"
-        )
+    def sync_thumbnail():
+        ts  = duration * 0.25
         cmd = [
-            "ffmpeg", "-i", target_file,
-            "-vf", f"{select_filter},scale=480:-1,tile=3x3",
+            "ffmpeg", "-ss", str(ts), "-i", target_file,
+            "-vf", "scale=480:-1",
             "-frames:v", "1", "-q:v", "3", config.SCREENSHOT, "-y"
         ]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    await loop.run_in_executor(None, sync_grid)
+    await loop.run_in_executor(None, sync_thumbnail)
 
 
 def get_crop_params(duration):

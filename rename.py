@@ -80,20 +80,34 @@ def get_track_info(source: str) -> tuple[list[dict], list[dict]]:
 # AUDIO TYPE DETECTION
 # ---------------------------------------------------------------------------
 
-def detect_audio_type(audio_tracks: list[dict]) -> str:
+def detect_audio_type(
+    audio_tracks: list[dict],
+    sub_tracks:   list[dict] | None = None,
+) -> str:
     """
-    Classify the release audio type from the track list.
+    Classify the release audio type from track lists.
 
     Rules
     -----
-    0–1 tracks  →  Sub   (single language, assumed original)
-    2 tracks    →  Dual
-    3 tracks    →  Tri
-    4+ tracks   →  Multi
+    1 audio + subs present          →  Sub
+    1 audio + no subs + jpn audio   →  Raw   (original, no translation)
+    1 audio + no subs + non-jpn     →  Dub   (dubbed only, no subs)
+    2 audio tracks                  →  Dual
+    3 audio tracks                  →  Tri
+    4+ audio tracks                 →  Multi
     """
-    count = len(audio_tracks)
+    count     = len(audio_tracks)
+    has_subs  = bool(sub_tracks)
+
     if count <= 1:
-        return "Sub"
+        if has_subs:
+            return "Sub"
+        # No subs — check audio language
+        lang = (audio_tracks[0].get("lang", "und") if audio_tracks else "und").lower()
+        if lang in ("jpn", "und", ""):
+            return "Raw"
+        return "Dub"
+
     if count == 2:
         return "Dual"
     if count == 3:
@@ -283,7 +297,7 @@ def resolve_output_name(
     if audio_type_override and audio_type_override.strip().lower() != "auto":
         audio_type = audio_type_override.strip().capitalize()
     else:
-        audio_type = detect_audio_type(audio_tracks)
+        audio_type = detect_audio_type(audio_tracks, sub_tracks)
 
     quality  = detect_quality(height)
     filename = build_output_name(

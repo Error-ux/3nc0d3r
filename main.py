@@ -9,7 +9,7 @@ from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
-from media import get_video_info, get_crop_params, select_params, async_generate_grid, get_vmaf, upload_to_cloud
+from media import get_video_info, get_crop_params, select_params, async_generate_thumbnail, get_vmaf, upload_to_cloud
 from rename import lang_code_to_name
 from ui import get_encode_ui, format_time, upload_progress, get_failure_ui, get_cancelled_ui
 from rename import resolve_output_name, format_track_report
@@ -578,7 +578,7 @@ async def main():
         # 8. METRICS + CLOUD UPLOAD (concurrent)
         final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
 
-        grid_task = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
+        grid_task = asyncio.create_task(async_generate_thumbnail(duration, config.FILE_NAME))
 
         if config.RUN_UPLOAD:
             await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.CLOUD ] Uploading to Gofile...</b>")

@@ -76,16 +76,27 @@ jobs:
           python-version: '3.10'
 
       # ─────────────────────────────────────────────────────────────────────
-      # CACHE: Python packages
+      # CACHE: Python library packages (pyrogram, tgcrypto, etc.)
+      # NOTE: yt-dlp is intentionally NOT in this cache — it's installed as
+      #       a standalone binary below to avoid broken-shebang issues when
+      #       a pip-installed script is restored on a fresh runner.
       # ─────────────────────────────────────────────────────────────────────
       - name: 📦 Cache Python Packages
         id: pip-cache
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.local/lib/python3.10/site-packages
-            ~/.local/bin
+          path: ~/.local/lib/python3.10/site-packages
           key: pip-packages-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      # ─────────────────────────────────────────────────────────────────────
+      # CACHE: yt-dlp standalone binary
+      # ─────────────────────────────────────────────────────────────────────
+      - name: 📦 Cache yt-dlp Binary
+        id: ytdlp-cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/yt-dlp
+          key: yt-dlp-standalone-${{ runner.os }}-${{ hashFiles('.github/workflows/encode.yml') }}
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE: FFmpeg binary
@@ -105,19 +116,35 @@ jobs:
           sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl
 
       # ─────────────────────────────────────────────────────────────────────
-      # INSTALL: Python packages (skip if cache hit + binaries healthy)
+      # INSTALL: yt-dlp as standalone binary (no Python path dependency)
+      # This avoids the "cannot execute: required file not found" error that
+      # occurs when a pip-installed yt-dlp script shebang points to a
+      # Python interpreter path that no longer exists on the runner.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: ⬇️ Install yt-dlp Standalone Binary
+        if: steps.ytdlp-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+            -o /usr/local/bin/yt-dlp
+          chmod +x /usr/local/bin/yt-dlp
+          echo "✅ yt-dlp $(yt-dlp --version) installed"
+
+      - name: ✅ Verify yt-dlp (cache restore)
+        if: steps.ytdlp-cache.outputs.cache-hit == 'true'
+        run: |
+          chmod +x /usr/local/bin/yt-dlp
+          echo "✅ yt-dlp $(yt-dlp --version) restored from cache"
+
+      # ─────────────────────────────────────────────────────────────────────
+      # INSTALL: Python library packages (skip if cache hit)
       # ─────────────────────────────────────────────────────────────────────
       - name: 🐍 Install Python Packages
         run: |
           if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
             echo "📥 Installing Python packages..."
-            pip install --user -r requirements.txt pyrogram tgcrypto yt-dlp
+            pip install --user -r requirements.txt pyrogram tgcrypto
           else
             echo "📦 Python packages restored from cache."
-            if ! command -v yt-dlp &>/dev/null; then
-              echo "⚠️ yt-dlp binary missing from cache, reinstalling..."
-              pip install --user yt-dlp
-            fi
           fi
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 

@@ -149,16 +149,24 @@ def download_m3u8(url):
                         if Path("/tmp/hls_seq_start.txt").exists() else "0")
 
         segments = sorted(seg_dir.glob("seg_*.ts"))
+        failed = 0
         for i, seg in enumerate(segments):
             iv_file = Path(f"/tmp/hls_iv_{i}.hex")
             iv_hex  = iv_file.read_text().strip() if iv_file.exists() \
                       else f"{seq_start + i:032x}"
-            subprocess.run([
-                "openssl", "enc", "-d", "-aes-128-cbc", "-nosalt",
+            result = subprocess.run([
+                "openssl", "enc", "-d", "-aes-128-cbc", "-nosalt", "-nopad",
                 "-K", key_hex, "-iv", iv_hex,
                 "-in", str(seg),
                 "-out", str(dec_dir / f"seg_{i:05d}.ts"),
-            ], stderr=subprocess.DEVNULL, check=True)
+            ], capture_output=True)
+            if result.returncode != 0:
+                err = result.stderr.decode().strip()
+                print(f"⚠️  seg_{i:05d} failed: {err}", flush=True)
+                failed += 1
+
+        if failed > 0:
+            raise RuntimeError(f"openssl decryption failed on {failed}/{len(segments)} segments")
 
         print(f"✅ Decrypted {len(segments)} segments", flush=True)
         with open("source.ts", "wb") as out:

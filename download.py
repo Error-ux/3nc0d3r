@@ -72,17 +72,14 @@ def detect_referer(url):
 
 
 def curl_fetch(url, referer="", output=None):
-    cmd = ["curl", "-sL", "--fail", "-A", "Mozilla/5.0"]
-    if referer:
-        cmd += ["-H", f"Referer: {referer}"]
-    if output:
-        cmd += ["-o", str(output)]
-    else:
-        cmd += ["-o", "-"]
-    cmd.append(url)
-    result = subprocess.run(cmd, capture_output=True if not output else False)
+    # Use shell=True so curl behaves identically to bash — avoids header
+    # differences that cause 403 on protected key servers
+    out_arg  = f"-o {output}" if output else "-o -"
+    ref_arg  = f'-H "Referer: {referer}"' if referer else ""
+    cmd = f'curl -sL --fail -A "Mozilla/5.0" {ref_arg} {out_arg} "{url}"'
+    result = subprocess.run(cmd, shell=True, capture_output=not output)
     if result.returncode != 0:
-        raise RuntimeError(f"curl failed (HTTP error) for {url}")
+        raise RuntimeError(f"curl failed (HTTP {result.returncode}) for {url}")
     return result.stdout if not output else None
 
 

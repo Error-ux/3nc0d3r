@@ -4,7 +4,7 @@ download.py
 Handles all download routing:
   - Telegram file/message links  → tg_handler.py
   - Magnet links                 → disabled (exit 1)
-  - M3U8 / HLS streams           → aria2c parallel + openssl decrypt + ffmpeg mux
+  - M3U8 / HLS streams           → parallel segment fetch (aria2c) + ffmpeg concat
   - Streaming platforms          → yt-dlp + aria2c
   - Direct CDN / file URLs       → aria2c
 
@@ -17,6 +17,8 @@ import sys
 import re
 import subprocess
 import urllib.parse
+import urllib.request
+import tempfile
 from pathlib import Path
 
 URL    = os.environ.get("VIDEO_URL", "").strip()
@@ -36,6 +38,8 @@ STREAMING_PLATFORMS = [
     "bilibili.com", "nicovideo.jp",
     "vimeo.com", "dailymotion.com", "twitch.tv",
 ]
+
+USER_AGENT = "Mozilla/5.0"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -71,61 +75,218 @@ def detect_referer(url):
     return ""
 
 
-def curl_fetch(url, referer="", output=None):
-    # Use shell=True so curl behaves identically to bash — avoids header
-    # differences that cause 403 on protected key servers
-    out_arg  = f"-o {output}" if output else "-o -"
-    ref_arg  = f'-H "Referer: {referer}"' if referer else ""
-    cmd = f'curl -sL --fail -A "Mozilla/5.0" {ref_arg} {out_arg} "{url}"'
-    result = subprocess.run(cmd, shell=True, capture_output=not output)
+def curl_fetch(url, referer=""):
+    """Fetch URL bytes via curl (shell=True keeps headers identical to browser)."""
+    ref_arg = f'-H "Referer: {referer}"' if referer else ""
+    cmd = f'curl -sL --fail -A "{USER_AGENT}" {ref_arg} "{url}"'
+    result = subprocess.run(cmd, shell=True, capture_output=True)
     if result.returncode != 0:
-        raise RuntimeError(f"curl failed (HTTP {result.returncode}) for {url}")
-    return result.stdout if not output else None
+        raise RuntimeError(f"curl failed for {url}")
+    return result.stdout
 
 
-# ── Download strategies ────────────────────────────────────────────────────
+# ── M3U8 parallel downloader ───────────────────────────────────────────────
+
+def resolve_base_url(m3u8_url):
+    """Return the base URL for resolving relative segment paths."""
+    return m3u8_url.rsplit("/", 1)[0] + "/"
+
+
+def parse_master_m3u8(content, base_url):
+    """
+    If this is a master playlist (contains #EXT-X-STREAM-INF),
+    return the URL of the highest-bandwidth variant.
+    Otherwise return None (it's already a media playlist).
+    """
+    lines = content.splitlines()
+    best_bw  = -1
+    best_url = None
+    for i, line in enumerate(lines):
+        if line.startswith("#EXT-X-STREAM-INF"):
+            bw_match = re.search(r"BANDWIDTH=(\d+)", line)
+            bw = int(bw_match.group(1)) if bw_match else 0
+            if bw > best_bw and i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line and not next_line.startswith("#"):
+                    best_bw  = bw
+                    best_url = next_line if next_line.startswith("http") \
+                               else base_url + next_line
+    return best_url
+
+
+def parse_segments(content, base_url):
+    """
+    Return a list of (segment_url, key_info_or_None) tuples from a media playlist.
+    key_info = {"method": str, "uri": str, "iv": str|None}
+    """
+    segments  = []
+    lines     = content.splitlines()
+    key_info  = None
+
+    for line in lines:
+        line = line.strip()
+        if line.startswith("#EXT-X-KEY"):
+            method = re.search(r'METHOD=([^,\s]+)', line)
+            uri    = re.search(r'URI="([^"]+)"',    line)
+            iv     = re.search(r'IV=([^,\s]+)',      line)
+            key_info = {
+                "method": method.group(1) if method else "NONE",
+                "uri":    uri.group(1)    if uri    else "",
+                "iv":     iv.group(1)     if iv     else None,
+            }
+        elif line and not line.startswith("#"):
+            seg_url = line if line.startswith("http") else base_url + line
+            segments.append((seg_url, key_info))
+
+    return segments
+
+
+def build_aria2c_input(segments, referer, out_dir):
+    """
+    Write an aria2c input file where every segment URL carries
+    its own header lines. Returns Path to the input file.
+    """
+    lines = []
+    for idx, (url, _key) in enumerate(segments):
+        seg_file = out_dir / f"seg_{idx:05d}.ts"
+        lines.append(url)
+        lines.append(f"  out={seg_file.name}")
+        lines.append(f"  dir={out_dir}")
+        lines.append(f"  header=User-Agent: {USER_AGENT}")
+        if referer:
+            lines.append(f"  header=Referer: {referer}")
+        lines.append("")          # blank line = separator between URIs
+
+    input_file = out_dir / "aria2c_input.txt"
+    input_file.write_text("\n".join(lines))
+    return input_file
+
+
+def decrypt_segment(seg_path, key_bytes, iv_bytes):
+    """AES-128-CBC decrypt a .ts segment in-place using openssl."""
+    iv_hex = iv_bytes.hex() if isinstance(iv_bytes, (bytes, bytearray)) else iv_bytes
+    tmp    = seg_path.with_suffix(".dec")
+    cmd = (
+        f'openssl enc -d -aes-128-cbc -nosalt '
+        f'-K {key_bytes.hex()} -iv {iv_hex} '
+        f'-in "{seg_path}" -out "{tmp}"'
+    )
+    result = subprocess.run(cmd, shell=True)
+    if result.returncode == 0:
+        tmp.replace(seg_path)
+    else:
+        print(f"⚠️  Decryption failed for {seg_path.name}, using raw segment", flush=True)
+        tmp.unlink(missing_ok=True)
+
+
+def download_m3u8(url):
+    print("📡 M3U8 detected — true parallel segment download", flush=True)
+    referer  = detect_referer(url)
+    base_url = resolve_base_url(url)
+
+    # ── Step 1: fetch the playlist ─────────────────────────────────────────
+    print("⬇️  Fetching playlist…", flush=True)
+    raw = curl_fetch(url, referer).decode(errors="replace")
+
+    # ── Step 2: handle master playlist → pick best variant ────────────────
+    best_variant = parse_master_m3u8(raw, base_url)
+    if best_variant:
+        print(f"🎯 Master playlist — selected best variant:\n   {best_variant}", flush=True)
+        base_url = resolve_base_url(best_variant)
+        raw = curl_fetch(best_variant, referer).decode(errors="replace")
+
+    # ── Step 3: parse segments ─────────────────────────────────────────────
+    segments = parse_segments(raw, base_url)
+    if not segments:
+        raise RuntimeError("No segments found in playlist — cannot continue")
+    print(f"📋 Found {len(segments)} segments", flush=True)
+
+    with tempfile.TemporaryDirectory(prefix="hls_segs_") as tmp_dir:
+        out_dir = Path(tmp_dir)
+
+        # ── Step 4: download all segments in parallel via aria2c ──────────
+        input_file = build_aria2c_input(segments, referer, out_dir)
+        print(f"⚡ aria2c parallel download ({len(segments)} segments)…", flush=True)
+        run([
+            "aria2c",
+            "--input-file",       str(input_file),
+            "--max-connection-per-server=16",
+            "--split=16",
+            "--min-split-size=1M",
+            "--max-concurrent-downloads=16",   # all segments in parallel
+            "--console-log-level=warn",
+            "--summary-interval=10",
+            "--retry-wait=5",
+            "--max-tries=10",
+            "--allow-overwrite=true",
+            "--auto-file-renaming=false",
+        ])
+
+        # ── Step 5: decrypt AES-128 segments (if encrypted) ───────────────
+        key_cache = {}
+        for idx, (seg_url, key_info) in enumerate(segments):
+            if not key_info or key_info["method"] == "NONE":
+                continue
+
+            seg_path = out_dir / f"seg_{idx:05d}.ts"
+            if not seg_path.exists():
+                print(f"⚠️  Missing segment {idx}, skipping decrypt", flush=True)
+                continue
+
+            key_uri = key_info["uri"]
+            if key_uri not in key_cache:
+                print(f"🔑 Fetching AES key: {key_uri}", flush=True)
+                key_cache[key_uri] = curl_fetch(key_uri, referer)
+
+            key_bytes = key_cache[key_uri]
+
+            # IV defaults to segment index (big-endian 128-bit)
+            if key_info["iv"]:
+                iv_hex = key_info["iv"].replace("0x", "").replace("0X", "")
+                iv_bytes = bytes.fromhex(iv_hex.zfill(32))
+            else:
+                iv_bytes = idx.to_bytes(16, "big")
+
+            decrypt_segment(seg_path, key_bytes, iv_bytes)
+
+        # ── Step 6: build ffmpeg concat list ──────────────────────────────
+        seg_paths = sorted(out_dir.glob("seg_*.ts"))
+        if not seg_paths:
+            raise RuntimeError("All segment downloads failed — no .ts files found")
+
+        concat_file = out_dir / "concat.txt"
+        concat_file.write_text(
+            "\n".join(f"file '{p}'" for p in seg_paths)
+        )
+
+        # ── Step 7: mux into final MKV ────────────────────────────────────
+        print(f"🎬 Muxing {len(seg_paths)} segments into source.mkv…", flush=True)
+        run([
+            "ffmpeg",
+            "-y",
+            "-f",         "concat",
+            "-safe",      "0",
+            "-i",         str(concat_file),
+            "-c",         "copy",
+            "-movflags",  "+faststart",
+            "source.mkv",
+        ])
+
+    print("✅ source.mkv ready", flush=True)
+
+
+# ── Download strategies (unchanged) ───────────────────────────────────────
 
 def download_telegram():
     print("📨 Telegram link detected — delegating to tg_handler.py", flush=True)
     run(["python3", "tg_handler.py"])
 
 
-def download_m3u8(url):
-    print("📡 M3U8 detected — yt-dlp + aria2c parallel download", flush=True)
-    referer = detect_referer(url)
-
-    aria2c_args = (
-        "-x 16 -s 16 -k 1M --console-log-level=warn "
-        "--summary-interval=10 --retry-wait=5 --max-tries=10"
-    )
-    if referer:
-        # Double-quotes are required — yt-dlp shlex.splits the args string,
-        # so single quotes become literal chars and break aria2c header parsing
-        aria2c_args += f' --header="Referer: {referer}" --header="User-Agent: Mozilla/5.0"'
-
-
-    cmd = [
-        "yt-dlp",
-        "--add-header", "User-Agent: Mozilla/5.0",
-        "--downloader", "aria2c",
-        "--downloader-args", f"aria2c:{aria2c_args}",
-        "--merge-output-format", "mkv",
-        "--force-overwrites",
-        "--no-continue",
-        "-o", "source.mkv",
-        url,
-    ]
-    if referer:
-        cmd = ["yt-dlp", "--add-header", f"Referer: {referer}"] + cmd[1:]
-
-    run(cmd)
-
-
 def download_streaming(url):
     print("📡 Streaming platform detected — using yt-dlp", flush=True)
     run([
         "yt-dlp",
-        "--add-header", "User-Agent:Mozilla/5.0",
+        "--add-header", f"User-Agent:{USER_AGENT}",
         "--downloader", "aria2c",
         "--downloader-args",
         "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn "
@@ -140,14 +301,14 @@ def download_direct(url):
     print("📥 Direct CDN download — resolving URL...", flush=True)
     result = subprocess.run(
         ["curl", "-s", "-o", "/dev/null", "-w", "%{url_effective}", "-L",
-         "-A", "Mozilla/5.0", url],
+         "-A", USER_AGENT, url],
         capture_output=True
     )
     final_url = result.stdout.decode().strip() or url
     print(f"✅ Resolved: {final_url}", flush=True)
     run([
         "aria2c", "-x", "16", "-s", "16", "-k", "1M",
-        "--user-agent=Mozilla/5.0",
+        f"--user-agent={USER_AGENT}",
         "--console-log-level=warn",
         "--summary-interval=10",
         "--retry-wait=5",

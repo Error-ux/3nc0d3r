@@ -143,7 +143,7 @@ jobs:
         run: |
           if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
             echo "📥 Installing Python packages..."
-            pip install --user -r requirements.txt pyrogram tgcrypto
+            pip install --user -r requirements.txt pyrogram tgcrypto pycryptodomex
           else
             echo "📦 Python packages restored from cache."
           fi
@@ -275,6 +275,7 @@ jobs:
               --add-header 'User-Agent:Mozilla/5.0' \
               --downloader aria2c \
               --downloader-args "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=10 --retry-wait=5 --max-tries=10" \
+              --downloader-args "ffmpeg_i:-allowed_extensions ALL -extension_picky 0 -protocol_whitelist file,http,https,tcp,tls,crypto" \
               --merge-output-format mkv \
               -o "source.mkv" \
               "$URL" 2>&1 | tee download.log

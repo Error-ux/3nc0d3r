@@ -252,6 +252,7 @@ jobs:
 
             # ── Auto-detect Referer from CDN domain ──────────────────────────
             REFERER_ARG=""
+            FFMPEG_HEADERS="-allowed_extensions ALL -extension_picky 0 -protocol_whitelist file,http,https,tcp,tls,crypto"
             declare -A CDN_REFERER_MAP=(
               ["uwucdn.top"]="https://kwik.cx/"
               ["kwik.cx"]="https://kwik.cx/"
@@ -264,7 +265,9 @@ jobs:
             for CDN_DOMAIN in "${!CDN_REFERER_MAP[@]}"; do
               if [[ "$URL" == *"$CDN_DOMAIN"* ]]; then
                 REFERER="${CDN_REFERER_MAP[$CDN_DOMAIN]}"
-                REFERER_ARG="--referer '$REFERER'"
+                REFERER_ARG="--referer ${REFERER}"
+                # Pass Referer+UA to ffmpeg so it can fetch the AES key (e.g. mon.key) — key server also checks Referer
+                FFMPEG_HEADERS="-allowed_extensions ALL -extension_picky 0 -protocol_whitelist file,http,https,tcp,tls,crypto -headers Referer:\ ${REFERER}\r\nUser-Agent:\ Mozilla/5.0\r\n"
                 echo "🔗 Auto-detected referer: $REFERER (matched: $CDN_DOMAIN)"
                 break
               fi
@@ -272,10 +275,10 @@ jobs:
 
             yt-dlp \
               $REFERER_ARG \
-              --add-header 'User-Agent:Mozilla/5.0' \
+              --add-header "User-Agent:Mozilla/5.0" \
               --downloader aria2c \
               --downloader-args "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=10 --retry-wait=5 --max-tries=10" \
-              --downloader-args "ffmpeg_i:-allowed_extensions ALL -extension_picky 0 -protocol_whitelist file,http,https,tcp,tls,crypto" \
+              --downloader-args "ffmpeg_i:${FFMPEG_HEADERS}" \
               --merge-output-format mkv \
               -o "source.mkv" \
               "$URL" 2>&1 | tee download.log

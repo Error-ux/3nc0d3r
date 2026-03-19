@@ -1,4 +1,4 @@
-import sys, os, re, urllib.request
+import sys, os, re, subprocess
 
 m3u8_url = sys.argv[1]
 referer  = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -7,12 +7,17 @@ seg_dir  = "/tmp/hls_segs"
 os.makedirs(seg_dir, exist_ok=True)
 
 def fetch(url):
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0",
-        "Referer": referer,
-    })
-    with urllib.request.urlopen(req) as r:
-        return r.read()
+    cmd = [
+        "curl", "-sL", "--fail",
+        "-A", "Mozilla/5.0",
+        url,
+    ]
+    if referer:
+        cmd += ["-H", f"Referer: {referer}"]
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        raise Exception(f"curl failed ({result.returncode}) for {url}: {result.stderr.decode()}")
+    return result.stdout
 
 m3u8  = fetch(m3u8_url).decode()
 lines = m3u8.splitlines()

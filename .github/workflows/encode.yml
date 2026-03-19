@@ -121,7 +121,7 @@ jobs:
         run: |
           if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
             echo "📥 Installing Python packages..."
-            pip install --user -r requirements.txt pyrogram tgcrypto pycryptodomex yt-dlp
+            pip install --user -r requirements.txt
           else
             echo "📦 Python packages restored from cache."
           fi

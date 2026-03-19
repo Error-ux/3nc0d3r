@@ -4,8 +4,8 @@ download.py
 Handles all download routing:
   - Telegram file/message links  → tg_handler.py
   - Magnet links                 → disabled (exit 1)
-  - M3U8 / HLS streams           → fetch ALL segments simultaneously via aria2c
-                                   (token-expiry safe) + openssl decrypt + ffmpeg mux
+  - M3U8 / HLS streams           → 30 parallel curl workers (bash script approach)
+                                   + AES key pre-fetch + openssl decrypt + ffmpeg mux
   - Streaming platforms          → yt-dlp + aria2c
   - Direct CDN / file URLs       → aria2c
 
@@ -19,6 +19,7 @@ import re
 import subprocess
 import urllib.parse
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 URL    = os.environ.get("VIDEO_URL", "").strip()
@@ -40,6 +41,7 @@ STREAMING_PLATFORMS = [
 ]
 
 USER_AGENT = "Mozilla/5.0"
+PARTS      = 30          # parallel curl workers (mirrors bash script)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -50,7 +52,6 @@ def run(cmd, check=True, **kwargs):
 
 
 def resolve_filename(url):
-    """Return a .mkv filename for the given URL."""
     if CUSTOM:
         return f"{CUSTOM}.mkv"
     try:
@@ -78,9 +79,8 @@ def detect_referer(url):
 def curl_fetch(url, referer="", extra_headers=None):
     """Fetch URL bytes via curl. Raises RuntimeError on failure."""
     ref_arg    = f'-H "Referer: {referer}"' if referer else ""
-    extra_args = ""
-    if extra_headers:
-        extra_args = " ".join(f'-H "{k}: {v}"' for k, v in extra_headers.items())
+    extra_args = " ".join(f'-H "{k}: {v}"' for k, v in extra_headers.items()) \
+                 if extra_headers else ""
     cmd = f'curl -sL --fail -A "{USER_AGENT}" {ref_arg} {extra_args} "{url}"'
     result = subprocess.run(cmd, shell=True, capture_output=True)
     if result.returncode != 0:
@@ -89,22 +89,14 @@ def curl_fetch(url, referer="", extra_headers=None):
 
 
 def fetch_aes_key(uri, referer):
-    """
-    Fetch an HLS AES-128 key, trying several header strategies.
-    Key servers often have stricter CORS/referer rules than segment CDNs.
-    """
+    """Try multiple header strategies to fetch an AES-128 key."""
     origin = referer.rstrip("/") if referer else ""
     strategies = [
-        # 1. Referer + Origin (most permissive)
         {"Referer": referer, "Origin": origin} if referer else {},
-        # 2. No headers at all (key server may whitelist bare requests)
         {},
-        # 3. Referer only
         {"Referer": referer} if referer else {},
-        # 4. Origin only
-        {"Origin": origin} if origin else {},
+        {"Origin": origin}   if origin else {},
     ]
-
     last_err = None
     for i, headers in enumerate(strategies):
         ref = headers.pop("Referer", "")
@@ -113,26 +105,20 @@ def fetch_aes_key(uri, referer):
             if data and len(data) >= 16:
                 print(f"🔑 Key fetched (strategy {i+1}): {uri}", flush=True)
                 return data
-            print(f"⚠️  Strategy {i+1} returned short body ({len(data)}B), trying next…",
-                  flush=True)
+            print(f"⚠️  Strategy {i+1} short body ({len(data)}B), trying next…", flush=True)
         except RuntimeError as e:
             print(f"⚠️  Strategy {i+1} failed: {e}", flush=True)
             last_err = e
-
     raise RuntimeError(f"All key-fetch strategies exhausted for {uri}") from last_err
 
 
-# ── M3U8 parallel downloader ───────────────────────────────────────────────
+# ── M3U8 helpers ───────────────────────────────────────────────────────────
 
 def resolve_base_url(m3u8_url):
     return m3u8_url.rsplit("/", 1)[0] + "/"
 
 
 def parse_master_m3u8(content, base_url):
-    """
-    If this is a master playlist, return the URL of the highest-bandwidth variant.
-    Otherwise return None.
-    """
     lines    = content.splitlines()
     best_bw  = -1
     best_url = None
@@ -141,23 +127,18 @@ def parse_master_m3u8(content, base_url):
             bw_match = re.search(r"BANDWIDTH=(\d+)", line)
             bw = int(bw_match.group(1)) if bw_match else 0
             if bw > best_bw and i + 1 < len(lines):
-                next_line = lines[i + 1].strip()
-                if next_line and not next_line.startswith("#"):
+                nxt = lines[i + 1].strip()
+                if nxt and not nxt.startswith("#"):
                     best_bw  = bw
-                    best_url = next_line if next_line.startswith("http") \
-                               else base_url + next_line
+                    best_url = nxt if nxt.startswith("http") else base_url + nxt
     return best_url
 
 
 def parse_segments(content, base_url):
-    """
-    Return list of (segment_url, key_info_or_None).
-    key_info = {"method": str, "uri": str, "iv": str|None}
-    """
+    """Return list of (segment_url, key_info_or_None)."""
     segments = []
     lines    = content.splitlines()
     key_info = None
-
     for line in lines:
         line = line.strip()
         if line.startswith("#EXT-X-KEY"):
@@ -172,29 +153,7 @@ def parse_segments(content, base_url):
         elif line and not line.startswith("#"):
             seg_url = line if line.startswith("http") else base_url + line
             segments.append((seg_url, key_info))
-
     return segments
-
-
-def build_aria2c_input(segments, referer, out_dir):
-    """
-    Write an aria2c input file with per-URI headers baked in.
-    This is the key to avoiding 403s — no shell quoting issues.
-    """
-    lines = []
-    for idx, (url, _key) in enumerate(segments):
-        seg_file = out_dir / f"seg_{idx:05d}.ts"
-        lines.append(url)
-        lines.append(f"  out={seg_file.name}")
-        lines.append(f"  dir={out_dir}")
-        lines.append(f"  header=User-Agent: {USER_AGENT}")
-        if referer:
-            lines.append(f"  header=Referer: {referer}")
-        lines.append("")  # blank line = separator
-
-    input_file = out_dir / "aria2c_input.txt"
-    input_file.write_text("\n".join(lines))
-    return input_file
 
 
 def decrypt_segment(seg_path, key_bytes, iv_bytes):
@@ -214,39 +173,58 @@ def decrypt_segment(seg_path, key_bytes, iv_bytes):
         tmp.unlink(missing_ok=True)
 
 
+# ── Download part (mirrors bash download_part function) ────────────────────
+
+def download_part(part_id, seg_slice, out_dir, referer):
+    """
+    Download a sequential slice of segments using curl.
+    Mirrors the bash script's download_part() function.
+    Each of the PARTS workers calls this in its own thread.
+    """
+    for idx, (seg_url, _key) in seg_slice:
+        fname = out_dir / f"{idx:05d}.ts"
+        ref_arg = f'-H "Referer: {referer}"' if referer else ""
+        cmd = f'curl -sL --fail -A "{USER_AGENT}" {ref_arg} -o "{fname}" "{seg_url}"'
+        result = subprocess.run(cmd, shell=True)
+        if result.returncode != 0:
+            print(f"⚠️  Part {part_id}: failed segment {idx} ({seg_url})", flush=True)
+
+
+# ── Main M3U8 handler ──────────────────────────────────────────────────────
+
 def download_m3u8(url):
     """
-    True parallel HLS downloader.
+    Parallel HLS downloader — Python port of script.sh.
 
-    Why not yt-dlp --concurrent-fragments?
-      Segment URLs contain time-limited tokens. yt-dlp processes fragments
-      in rolling batches, so later segments arrive after the tokens expire → 403.
-      aria2c with --max-concurrent-downloads=N fires ALL segments at once,
-      so every request is made while the tokens are still valid.
+    Splits segments into PARTS slices and fires each slice in its own
+    thread (curl downloads sequentially within each slice).
+    AES keys are pre-fetched immediately after playlist parsing so their
+    tokens don't expire before the downloads complete.
     """
-    print("📡 M3U8 detected — true parallel segment download (token-expiry safe)", flush=True)
+    print(f"📡 M3U8 detected — {PARTS} parallel curl workers", flush=True)
     referer  = detect_referer(url)
     base_url = resolve_base_url(url)
 
-    # Step 1: fetch playlist
-    print("⬇️  Fetching playlist…", flush=True)
+    # [+] Fetching playlist...
+    print("[+] Fetching playlist...", flush=True)
     raw = curl_fetch(url, referer).decode(errors="replace")
 
-    # Step 2: handle master playlist → pick highest-bandwidth variant
+    # If master playlist → pick best
     best_variant = parse_master_m3u8(raw, base_url)
     if best_variant:
-        print(f"🎯 Master playlist — selected best variant:\n   {best_variant}", flush=True)
+        print(f"[+] Master playlist detected → {best_variant}", flush=True)
         base_url = resolve_base_url(best_variant)
         raw = curl_fetch(best_variant, referer).decode(errors="replace")
 
-    # Step 3: parse all segment URLs + encryption metadata
+    # [+] Extracting segments...
+    print("[+] Extracting segments...", flush=True)
     segments = parse_segments(raw, base_url)
-    if not segments:
+    total    = len(segments)
+    if not total:
         raise RuntimeError("No segments found in playlist")
-    print(f"📋 Found {len(segments)} segments", flush=True)
+    print(f"[+] Total segments: {total}", flush=True)
 
-    # Step 4: pre-fetch AES keys NOW while tokens are still valid
-    # (key URLs share the same time-limited token as segment URLs)
+    # Pre-fetch AES keys while tokens are still valid
     key_cache = {}
     for _seg_url, key_info in segments:
         if key_info and key_info["method"] != "NONE" and key_info["uri"]:
@@ -254,76 +232,78 @@ def download_m3u8(url):
             if uri not in key_cache:
                 key_cache[uri] = fetch_aes_key(uri, referer)
 
+    # [+] Splitting into PARTS parts...
+    seg_per_part = (total + PARTS - 1) // PARTS
+    print(f"[+] Splitting into {PARTS} parts ({seg_per_part} segments each)…", flush=True)
+
+    # Build slices: list of (part_id, [(global_idx, seg_url, key_info), ...])
+    slices = []
+    for p in range(PARTS):
+        start = p * seg_per_part
+        if start >= total:
+            break
+        end   = min(start + seg_per_part, total)
+        chunk = [(i, segments[i]) for i in range(start, end)]
+        slices.append((p, chunk))
+        print(f"[+] Part {p} → segments {start} to {end - 1}", flush=True)
+
     with tempfile.TemporaryDirectory(prefix="hls_segs_") as tmp_dir:
         out_dir = Path(tmp_dir)
 
-        # Step 5: download ALL segments simultaneously before tokens expire
-        input_file = build_aria2c_input(segments, referer, out_dir)
-        print(f"⚡ Firing all {len(segments)} segments simultaneously…", flush=True)
-        run([
-            "aria2c",
-            "--input-file",                str(input_file),
-            "--max-connection-per-server=16",
-            "--split=16",
-            "--min-split-size=1M",
-            f"--max-concurrent-downloads={len(segments)}",  # ALL at once
-            "--console-log-level=warn",
-            "--summary-interval=10",
-            "--retry-wait=5",
-            "--max-tries=10",
-            "--allow-overwrite=true",
-            "--auto-file-renaming=false",
-        ])
+        # Start parallel downloads (mirrors: download_part $p $start $end &)
+        with ThreadPoolExecutor(max_workers=PARTS) as pool:
+            futures = {
+                pool.submit(download_part, p, chunk, out_dir, referer): p
+                for p, chunk in slices
+            }
+            for fut in as_completed(futures):
+                p = futures[fut]
+                try:
+                    fut.result()
+                except Exception as e:
+                    print(f"⚠️  Part {p} raised: {e}", flush=True)
 
-        # Step 6: decrypt AES-128 segments using pre-fetched keys
+        print("[+] All parts downloaded", flush=True)
+
+        # Decrypt AES-128 segments using pre-fetched keys
         for idx, (seg_url, key_info) in enumerate(segments):
             if not key_info or key_info["method"] == "NONE":
                 continue
-
-            seg_path = out_dir / f"seg_{idx:05d}.ts"
+            seg_path = out_dir / f"{idx:05d}.ts"
             if not seg_path.exists():
-                print(f"⚠️  Missing segment {idx}, skipping decrypt", flush=True)
                 continue
-
-            key_uri = key_info["uri"]
-            if key_uri not in key_cache:
-                key_cache[key_uri] = fetch_aes_key(key_uri, referer)
-
-            key_bytes = key_cache[key_uri]
-
-            # IV defaults to segment index (big-endian 128-bit)
+            key_uri   = key_info["uri"]
+            key_bytes = key_cache.get(key_uri) or fetch_aes_key(key_uri, referer)
             if key_info["iv"]:
                 iv_hex   = key_info["iv"].replace("0x", "").replace("0X", "")
                 iv_bytes = bytes.fromhex(iv_hex.zfill(32))
             else:
                 iv_bytes = idx.to_bytes(16, "big")
-
             decrypt_segment(seg_path, key_bytes, iv_bytes)
 
-        # Step 7: build ffmpeg concat list
-        seg_paths = sorted(out_dir.glob("seg_*.ts"))
+        # [+] Creating file list... (mirrors: ls *.ts | sort > list.txt)
+        print("[+] Creating file list...", flush=True)
+        seg_paths = sorted(out_dir.glob("*.ts"))
         if not seg_paths:
-            raise RuntimeError("No .ts segments found after download")
+            raise RuntimeError("No .ts files found after download")
 
-        concat_file = out_dir / "concat.txt"
+        concat_file = out_dir / "list.txt"
         concat_file.write_text("\n".join(f"file '{p}'" for p in seg_paths))
 
-        # Step 8: mux into final MKV
-        print(f"🎬 Muxing {len(seg_paths)} segments → source.mkv…", flush=True)
+        # [+] Merging with ffmpeg...
+        print("[+] Merging with ffmpeg...", flush=True)
         run([
-            "ffmpeg", "-y",
-            "-f",        "concat",
-            "-safe",     "0",
-            "-i",        str(concat_file),
-            "-c",        "copy",
-            "-movflags", "+faststart",
+            "ffmpeg", "-loglevel", "error",
+            "-f", "concat", "-safe", "0",
+            "-i", str(concat_file),
+            "-c", "copy",
             "source.mkv",
         ])
 
-    print("✅ source.mkv ready", flush=True)
+    print("[+] Done → source.mkv", flush=True)
 
 
-# ── Other download strategies (unchanged) ─────────────────────────────────
+# ── Other download strategies ──────────────────────────────────────────────
 
 def download_telegram():
     print("📨 Telegram link detected — delegating to tg_handler.py", flush=True)

@@ -99,7 +99,10 @@ def download_m3u8(url):
         "--summary-interval=10 --retry-wait=5 --max-tries=10"
     )
     if referer:
-        aria2c_args += f" --header='Referer: {referer}' --header='User-Agent: Mozilla/5.0'"
+        # Double-quotes are required — yt-dlp shlex.splits the args string,
+        # so single quotes become literal chars and break aria2c header parsing
+        aria2c_args += f' --header="Referer: {referer}" --header="User-Agent: Mozilla/5.0"'
+
 
     cmd = [
         "yt-dlp",

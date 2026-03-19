@@ -72,7 +72,7 @@ def detect_referer(url):
 
 
 def curl_fetch(url, referer="", output=None):
-    cmd = ["curl", "-sL", "-A", "Mozilla/5.0"]
+    cmd = ["curl", "-sL", "--fail", "-A", "Mozilla/5.0"]
     if referer:
         cmd += ["-H", f"Referer: {referer}"]
     if output:
@@ -82,7 +82,7 @@ def curl_fetch(url, referer="", output=None):
     cmd.append(url)
     result = subprocess.run(cmd, capture_output=True if not output else False)
     if result.returncode != 0:
-        raise RuntimeError(f"curl failed for {url}")
+        raise RuntimeError(f"curl failed (HTTP error) for {url}")
     return result.stdout if not output else None
 
 
@@ -114,7 +114,13 @@ def download_m3u8(url):
             key_uri = f"{base_url}/{key_uri}"
         print(f"🔑 Fetching key: {key_uri}", flush=True)
         curl_fetch(key_uri, referer=referer, output="/tmp/hls.key")
-        print(f"✅ Key fetched ({Path('/tmp/hls.key').stat().st_size} bytes)", flush=True)
+        key_size = Path("/tmp/hls.key").stat().st_size
+        if key_size != 16:
+            raise RuntimeError(
+                f"AES key must be 16 bytes, got {key_size} bytes — "
+                f"server likely returned an error page (check Referer/headers)"
+            )
+        print(f"✅ Key fetched (16 bytes)", flush=True)
 
     # Step 2: Parse manifest → aria2c list (no HTTP)
     run(["python3", "hls_parse.py", "/tmp/hls_manifest.txt", base_url, referer])

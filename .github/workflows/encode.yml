@@ -100,6 +100,16 @@ jobs:
           key: yt-dlp-standalone-${{ runner.os }}-${{ hashFiles('.github/workflows/encode.yml') }}
 
       # ─────────────────────────────────────────────────────────────────────
+      # CACHE: N_m3u8DL-RE binary (fast parallel HLS downloader)
+      # ─────────────────────────────────────────────────────────────────────
+      - name: 📦 Cache N_m3u8DL-RE Binary
+        id: n-m3u8dl-cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/N_m3u8DL-RE
+          key: n-m3u8dl-re-linux64-${{ runner.os }}
+
+      # ─────────────────────────────────────────────────────────────────────
       # CACHE: FFmpeg binary
       # ─────────────────────────────────────────────────────────────────────
       - name: 📦 Cache FFmpeg Binary
@@ -135,6 +145,26 @@ jobs:
         run: |
           chmod +x /usr/local/bin/yt-dlp
           echo "✅ yt-dlp $(yt-dlp --version) restored from cache"
+
+      # ─────────────────────────────────────────────────────────────────────
+      # INSTALL: N_m3u8DL-RE — parallel HLS downloader with AES-128 support
+      # Handles encrypted m3u8 streams natively without ffmpeg fallback
+      # ─────────────────────────────────────────────────────────────────────
+      - name: ⬇️ Install N_m3u8DL-RE
+        if: steps.n-m3u8dl-cache.outputs.cache-hit != 'true'
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/nilaoda/N_m3u8DL-RE/releases/latest | grep browser_download_url | grep linux-x64 | grep -v sha | cut -d\" -f4)
+          curl -L "$LATEST" -o /tmp/n_m3u8dl.tar.gz
+          tar -xf /tmp/n_m3u8dl.tar.gz -C /tmp
+          sudo mv /tmp/N_m3u8DL-RE /usr/local/bin/N_m3u8DL-RE
+          sudo chmod +x /usr/local/bin/N_m3u8DL-RE
+          echo "✅ N_m3u8DL-RE $(N_m3u8DL-RE --version 2>&1 | head -1) installed"
+
+      - name: ✅ Verify N_m3u8DL-RE (cache restore)
+        if: steps.n-m3u8dl-cache.outputs.cache-hit == 'true'
+        run: |
+          sudo chmod +x /usr/local/bin/N_m3u8DL-RE
+          echo "✅ N_m3u8DL-RE restored from cache"
 
       # ─────────────────────────────────────────────────────────────────────
       # INSTALL: Python library packages (skip if cache hit)
@@ -227,15 +257,11 @@ jobs:
             echo "❌ ERROR: Magnet links are disabled." | tee download.log
             exit 1
 
-          # ── Streaming platforms / HLS → yt-dlp ──────────────────────────
-          elif [[ "$URL" == *.m3u8* ]] || [[ "$URL" == *m3u8* ]] || \
-               [[ "$URL" == *bilibili.com* ]] || [[ "$URL" == *nicovideo.jp* ]] || \
-               [[ "$URL" == *vimeo.com* ]] || [[ "$URL" == *dailymotion.com* ]] || \
-               [[ "$URL" == *twitch.tv* ]]; then
+          # ── M3U8 / HLS → N_m3u8DL-RE (parallel, AES-128 native) ────────
+          elif [[ "$URL" == *.m3u8* ]] || [[ "$URL" == *m3u8* ]]; then
 
             # Resolve output filename
             if [ -z "$CUSTOM" ]; then
-              # Try resolve_filename.py first; fall back to URL basename
               CLEAN_NAME=$(python3 resolve_filename.py "$URL" 2>/dev/null || \
                            basename "$URL" | sed 's/\?.*//' | \
                            python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
@@ -248,11 +274,10 @@ jobs:
               FN="${CUSTOM}.mkv"
             fi
 
-            echo "📡 Streaming URL detected — using yt-dlp"
+            echo "📡 M3U8 detected — using N_m3u8DL-RE (parallel)"
 
             # ── Auto-detect Referer from CDN domain ──────────────────────────
-            REFERER_ARG=""
-            FFMPEG_HEADERS="-allowed_extensions ALL -extension_picky 0 -protocol_whitelist file,http,https,tcp,tls,crypto"
+            HEADER_ARGS=""
             declare -A CDN_REFERER_MAP=(
               ["uwucdn.top"]="https://kwik.cx/"
               ["kwik.cx"]="https://kwik.cx/"
@@ -265,20 +290,52 @@ jobs:
             for CDN_DOMAIN in "${!CDN_REFERER_MAP[@]}"; do
               if [[ "$URL" == *"$CDN_DOMAIN"* ]]; then
                 REFERER="${CDN_REFERER_MAP[$CDN_DOMAIN]}"
-                REFERER_ARG="--referer ${REFERER}"
-                # Pass Referer+UA to ffmpeg so it can fetch the AES key (e.g. mon.key) — key server also checks Referer
-                FFMPEG_HEADERS="-allowed_extensions ALL -extension_picky 0 -protocol_whitelist file,http,https,tcp,tls,crypto -headers Referer:\ ${REFERER}\r\nUser-Agent:\ Mozilla/5.0\r\n"
+                HEADER_ARGS="--header \"Referer: ${REFERER}\" --header \"User-Agent: Mozilla/5.0\""
                 echo "🔗 Auto-detected referer: $REFERER (matched: $CDN_DOMAIN)"
                 break
               fi
             done
 
+            eval N_m3u8DL-RE \
+              "$URL" \
+              $HEADER_ARGS \
+              --thread-count 16 \
+              --download-retry-count 5 \
+              --save-name "source" \
+              --save-dir "." \
+              --tmp-dir "/tmp/m3u8_tmp" \
+              --no-date-info \
+              -sv best \
+              --mux-after-done format=mkv \
+              2>&1 | tee download.log
+
+            echo "$FN" > tg_fname.txt
+
+          # ── Other streaming platforms → yt-dlp ───────────────────────────
+          elif [[ "$URL" == *bilibili.com* ]] || [[ "$URL" == *nicovideo.jp* ]] || \
+               [[ "$URL" == *vimeo.com* ]] || [[ "$URL" == *dailymotion.com* ]] || \
+               [[ "$URL" == *twitch.tv* ]]; then
+
+            # Resolve output filename
+            if [ -z "$CUSTOM" ]; then
+              CLEAN_NAME=$(python3 resolve_filename.py "$URL" 2>/dev/null || \
+                           basename "$URL" | sed 's/\?.*//' | \
+                           python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
+              if [[ "$CLEAN_NAME" != *.mkv ]] && [[ "$CLEAN_NAME" != *.mp4 ]] && [[ "$CLEAN_NAME" != *.webm ]]; then
+                FN="${CLEAN_NAME}.mkv"
+              else
+                FN="$CLEAN_NAME"
+              fi
+            else
+              FN="${CUSTOM}.mkv"
+            fi
+
+            echo "📡 Streaming platform detected — using yt-dlp"
+
             yt-dlp \
-              $REFERER_ARG \
               --add-header "User-Agent:Mozilla/5.0" \
               --downloader aria2c \
               --downloader-args "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=10 --retry-wait=5 --max-tries=10" \
-              --downloader-args "ffmpeg_i:${FFMPEG_HEADERS}" \
               --merge-output-format mkv \
               -o "source.mkv" \
               "$URL" 2>&1 | tee download.log

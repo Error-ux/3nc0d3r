@@ -282,12 +282,16 @@ jobs:
               --summary-interval=10 \
               2>&1 | tee download.log
 
-            # ── Step 4: Decrypt + merge ───────────────────────────────────────
-            echo "🔓 Decrypting and merging segments..."
-            python3 hls_decrypt.py
+            # ── Step 4: Build local m3u8 pointing to downloaded segments ──────
+            # ffmpeg handles AES-128 decryption natively using the pre-fetched key
+            echo "📦 Building local m3u8 and muxing..."
+            python3 hls_localmux.py "$URL" "$REFERER"
 
-            echo "📦 Muxing to MKV..."
-            ffmpeg -i source.ts -c copy source.mkv -y 2>&1
+            ffmpeg -allowed_extensions ALL \
+              -protocol_whitelist "file,crypto,data,http,https,tcp,tls" \
+              -i /tmp/hls_local.m3u8 \
+              -c copy source.mkv -y 2>&1
+
             rm -f source.ts
 
             echo "$FN" > tg_fname.txt

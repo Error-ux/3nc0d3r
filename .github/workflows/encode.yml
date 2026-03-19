@@ -286,7 +286,41 @@ jobs:
               ["moon-cdn"]="https://gogoanime.cl/"
               ["gogo-cdn"]="https://gogoanime.cl/"
             )
-            # Build args as array — avoids eval/quoting issues with header values
+            REFERER=""
+            for CDN_DOMAIN in "${!CDN_REFERER_MAP[@]}"; do
+              if [[ "$URL" == *"$CDN_DOMAIN"* ]]; then
+                REFERER="${CDN_REFERER_MAP[$CDN_DOMAIN]}"
+                echo "🔗 Auto-detected referer: $REFERER (matched: $CDN_DOMAIN)"
+                break
+              fi
+            done
+
+            # ── Pre-fetch AES key with curl (key server checks Referer) ──────
+            # N_m3u8DL-RE fetches the key in an early init step before --header
+            # flags take effect, causing 403. We fetch it manually and pass it
+            # via --key-text-file so N_m3u8DL-RE never needs to request it.
+            KEY_ARG=""
+            BASE_URL=$(dirname "$URL")
+            M3U8_CONTENT=$(curl -s               -H "Referer: ${REFERER}"               -H "User-Agent: Mozilla/5.0"               "$URL")
+            KEY_URI=$(echo "$M3U8_CONTENT" | grep -oP '(?<=URI=")[^"]+' | head -1)
+            if [ -n "$KEY_URI" ]; then
+              # Resolve relative key URLs
+              if [[ "$KEY_URI" != http* ]]; then
+                KEY_URI="${BASE_URL}/${KEY_URI}"
+              fi
+              echo "🔑 Fetching AES key from: $KEY_URI"
+              curl -s                 -H "Referer: ${REFERER}"                 -H "User-Agent: Mozilla/5.0"                 "$KEY_URI" -o /tmp/hls.key
+              if [ -s /tmp/hls.key ]; then
+                KEY_HEX=$(xxd -p /tmp/hls.key | tr -d '\n')
+                echo "$KEY_HEX" > /tmp/hls.key.hex
+                KEY_ARG="--key-text-file /tmp/hls.key.hex"
+                echo "✅ AES key fetched successfully"
+              else
+                echo "⚠️ Key fetch returned empty — will try without key override"
+              fi
+            fi
+
+            # Build args as array
             N_M3U8_ARGS=(
               "$URL"
               --thread-count 16
@@ -298,15 +332,9 @@ jobs:
               -sv best
               --mux-after-done format=mkv
             )
-            for CDN_DOMAIN in "${!CDN_REFERER_MAP[@]}"; do
-              if [[ "$URL" == *"$CDN_DOMAIN"* ]]; then
-                REFERER="${CDN_REFERER_MAP[$CDN_DOMAIN]}"
-                N_M3U8_ARGS+=(--header "Referer: ${REFERER}")
-                N_M3U8_ARGS+=(--header "User-Agent: Mozilla/5.0")
-                echo "🔗 Auto-detected referer: $REFERER (matched: $CDN_DOMAIN)"
-                break
-              fi
-            done
+            [ -n "$REFERER" ] && N_M3U8_ARGS+=(--header "Referer: ${REFERER}")
+            N_M3U8_ARGS+=(--header "User-Agent: Mozilla/5.0")
+            [ -n "$KEY_ARG" ] && N_M3U8_ARGS+=($KEY_ARG)
 
             N_m3u8DL-RE "${N_M3U8_ARGS[@]}" 2>&1 | tee download.log
 

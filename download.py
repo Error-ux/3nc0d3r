@@ -246,6 +246,12 @@ def route():
         print("❌ ERROR: Magnet links are disabled.", flush=True)
         sys.exit(1)
 
+    # ── anibd.app → Anidb.py ──────────────────────────────────────────────────
+    if "anibd.app" in URL:
+        import Anidb
+        Anidb.download(URL)
+        return
+
     # ── HLS / known streaming platforms → yt-dlp ─────────────────────────────
     is_hls      = "m3u8" in URL
     is_platform = any(d in URL for d in YTDLP_DOMAINS)

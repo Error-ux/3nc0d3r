@@ -122,12 +122,9 @@ def download_m3u8(url):
 
     # Step 3: Run ffmpeg on patched manifest — reads key locally, fetches segments remotely
     if referer:
-        headers = f"Referer: {referer}
-User-Agent: Mozilla/5.0
-"
+        headers = "Referer: " + referer + "\r\nUser-Agent: Mozilla/5.0\r\n"
     else:
-        headers = "User-Agent: Mozilla/5.0
-"
+        headers = "User-Agent: Mozilla/5.0\r\n"
 
     run([
         "ffmpeg",

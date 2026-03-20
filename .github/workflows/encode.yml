@@ -110,11 +110,34 @@ jobs:
           key: ffmpeg-master-linux64-gpl-${{ runner.os }}
 
       # ─────────────────────────────────────────────────────────────────────
-      # INSTALL: System tools (always fresh — avoids broken shared-lib cache)
+      # CACHE: apt packages (aria2, mkvtoolnix, curl)
+      # Cached by runner OS + a fixed key. Busting the key forces a fresh install.
       # ─────────────────────────────────────────────────────────────────────
+      - name: 📦 Cache APT Packages
+        id: apt-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/apt-cache
+          key: apt-packages-${{ runner.os }}-aria2-mkvtoolnix-curl-v1
+
       - name: 🛠 Install System Tools
         run: |
-          sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl
+          if [ "${{ steps.apt-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "📦 Restoring apt packages from cache..."
+            sudo cp -rn /tmp/apt-cache/usr /
+            sudo ldconfig
+            echo "✅ apt packages restored"
+          else
+            echo "📥 Installing apt packages..."
+            sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl
+            echo "💾 Saving apt packages to cache..."
+            mkdir -p /tmp/apt-cache/usr
+            for pkg in aria2 mkvtoolnix curl; do
+              dpkg -L $pkg | while read f; do
+                [ -f "$f" ] && sudo cp --parents "$f" /tmp/apt-cache/ 2>/dev/null || true
+              done
+            done
+          fi
 
       # ─────────────────────────────────────────────────────────────────────
       # INSTALL: yt-dlp as standalone binary (no Python path dependency)

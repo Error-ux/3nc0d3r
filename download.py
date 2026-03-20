@@ -94,15 +94,18 @@ def download_m3u8(url):
     print("📡 M3U8 detected — yt-dlp + aria2c + ffmpeg key headers", flush=True)
     referer = detect_referer(url)
 
-    # Run via bash shell to match working commit behaviour exactly
-    # When run as a Python list, yt-dlp ffmpeg_i arg parsing differs subtly
+    # Resolve full yt-dlp path — $GITHUB_PATH not inherited by shell=True bash
+    import shutil as _shutil
+    ytdlp_bin = _shutil.which("yt-dlp") or os.path.expanduser("~/.local/bin/yt-dlp")
+    print(f"🔍 yt-dlp: {ytdlp_bin}", flush=True)
+
     referer_arg = f"--referer '{referer}'" if referer else ""
     ffmpeg_headers = "-allowed_extensions ALL -extension_picky 0 -protocol_whitelist file,http,https,tcp,tls,crypto"
     if referer:
         ffmpeg_headers += f" -headers $'Referer: {referer}\\r\\nUser-Agent: Mozilla/5.0\\r\\n'"
 
     cmd = (
-        f"yt-dlp "
+        f"'{ytdlp_bin}' "
         f"{referer_arg} "
         f"--add-header 'User-Agent:Mozilla/5.0' "
         f"--downloader aria2c "

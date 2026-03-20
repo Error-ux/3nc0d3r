@@ -663,17 +663,10 @@ async def main():
 
         await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>")
 
-        # Telegram mangles filenames >64 chars (strips brackets, spaces→underscores).
-        # Truncate only the file_name sent to Telegram — config.FILE_NAME stays intact.
-        _tg_file_name = config.FILE_NAME
-        if len(_tg_file_name) > 64:
-            name, ext = os.path.splitext(_tg_file_name)
-            _tg_file_name = name[:64 - len(ext) - 1].rstrip() + "…" + ext
-
         await app.send_document(
             chat_id=config.CHAT_ID,
             document=config.FILE_NAME,
-            file_name=_tg_file_name,
+            file_name=config.FILE_NAME,
             thumb=thumb,
             caption=report,
             parse_mode=enums.ParseMode.HTML,

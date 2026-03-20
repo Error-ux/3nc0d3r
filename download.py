@@ -77,7 +77,7 @@ def curl_fetch(url, referer="", output=None):
     out_arg  = f"-o {output}" if output else "-o -"
     ref_arg  = f'-H "Referer: {referer}"' if referer else ""
     cmd = f'curl -sL --fail -A "Mozilla/5.0" {ref_arg} {out_arg} "{url}"'
-    result = subprocess.run(cmd, shell=True, capture_output=not output)
+    result = subprocess.run(cmd, shell=True, executable='/bin/bash', capture_output=not output)
     if result.returncode != 0:
         raise RuntimeError(f"curl failed (HTTP {result.returncode}) for {url}")
     return result.stdout if not output else None
@@ -91,55 +91,33 @@ def download_telegram():
 
 
 def download_m3u8(url):
-    print("📡 M3U8 detected — ffmpeg sequential download", flush=True)
+    print("📡 M3U8 detected — yt-dlp + aria2c + ffmpeg key headers", flush=True)
     referer = detect_referer(url)
-    base_url = url.rsplit("/", 1)[0]
 
-    # Step 1: Fetch manifest via curl
-    print("📄 Fetching manifest...", flush=True)
-    manifest = curl_fetch(url, referer=referer).decode()
-
-    # Step 2: Pre-fetch AES key via curl (CDN blocks ffmpeg's key requests on Azure IPs)
-    # ffmpeg will use the local file instead — bypasses the IP ban on the key endpoint
-    import re as _re
-    key_uri_match = _re.search(r'URI="([^"]+)"', manifest)
-    patched = manifest
-
-    if key_uri_match:
-        key_uri = key_uri_match.group(1)
-        if not key_uri.startswith("http"):
-            key_uri = f"{base_url}/{key_uri}"
-        print(f"🔑 Pre-fetching key via curl: {key_uri}", flush=True)
-        curl_fetch(key_uri, referer=referer, output="/tmp/hls.key")
-        key_size = Path("/tmp/hls.key").stat().st_size
-        if key_size != 16:
-            raise RuntimeError(f"Bad key: {key_size} bytes (expected 16)")
-        print(f"✅ Key saved to /tmp/hls.key", flush=True)
-        # Patch manifest to use local key file
-        patched = manifest.replace(key_uri_match.group(1), "file:///tmp/hls.key")
-
-    Path("/tmp/hls_patched.m3u8").write_text(patched)
-
-    # Step 3: Run ffmpeg on patched manifest — reads key locally, fetches segments remotely
+    # Mirror the working bash approach exactly:
+    # - yt-dlp --referer for manifest/key requests
+    # - aria2c for parallel segment downloads
+    # - ffmpeg_i downloader-args pass Referer to ffmpeg for AES key fetching
+    ffmpeg_headers = "-allowed_extensions ALL -extension_picky 0 -protocol_whitelist file,http,https,tcp,tls,crypto"
     if referer:
-        headers = "Referer: " + referer + "\r\nUser-Agent: Mozilla/5.0\r\n"
-    else:
-        headers = "User-Agent: Mozilla/5.0\r\n"
+        ffmpeg_headers += r" -headers Referer:\ " + referer + r"\r\nUser-Agent:\ Mozilla/5.0\r\n"
 
-    run([
-        "ffmpeg",
-        "-headers", headers,
-        "-allowed_extensions", "ALL",
-        "-extension_picky", "0",
-        "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
-        "-reconnect", "1",
-        "-reconnect_streamed", "1",
-        "-reconnect_delay_max", "5",
-        "-i", "/tmp/hls_patched.m3u8",
-        "-c", "copy",
-        "source.mkv",
-        "-y",
-    ])
+    cmd = [
+        "yt-dlp",
+        "--add-header", "User-Agent:Mozilla/5.0",
+        "--downloader", "aria2c",
+        "--downloader-args", "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=10 --retry-wait=5 --max-tries=10",
+        "--downloader-args", f"ffmpeg_i:{ffmpeg_headers}",
+        "--merge-output-format", "mkv",
+        "--force-overwrites",
+        "--no-continue",
+        "-o", "source.mkv",
+        url,
+    ]
+    if referer:
+        cmd = ["yt-dlp", "--referer", referer] + cmd[1:]
+
+    run(cmd)
 
 
 def download_streaming(url):

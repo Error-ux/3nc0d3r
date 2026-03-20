@@ -152,6 +152,8 @@ def notify_download_start(method, output_name):
             "-d", payload,
         ],
         check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 

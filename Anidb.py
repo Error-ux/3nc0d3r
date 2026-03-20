@@ -77,6 +77,8 @@ def _tg_send(text: str) -> None:
             ],
             check=False,
             timeout=10,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except Exception:
         pass

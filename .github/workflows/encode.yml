@@ -270,46 +270,9 @@ jobs:
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
           ENCODE_OUTCOME: ${{ steps.encode.outcome }}
-        run: |
-          FILE_NAME=$(cat tg_fname.txt 2>/dev/null || echo "${{ github.event.inputs.ui_title || 'Unknown' }}")
-
-          # Determine which step failed and pick its log
-          if [ "$DOWNLOAD_OUTCOME" = "failure" ]; then
-            FAILED_PHASE="DOWNLOAD"
-            LOG_FILE="download.log"
-            PHASE_ICON="📥"
-          elif [ "$ENCODE_OUTCOME" = "failure" ]; then
-            FAILED_PHASE="ENCODE"
-            LOG_FILE="encode.log"
-            PHASE_ICON="⚙️"
-          else
-            FAILED_PHASE="UNKNOWN"
-            LOG_FILE=""
-            PHASE_ICON="❌"
-          fi
-
-          # Get last 30 lines of the relevant log as the error snippet
-          if [ -f "$LOG_FILE" ]; then
-            ERROR_SNIPPET=$(tail -30 "$LOG_FILE")
-          else
-            ERROR_SNIPPET="No log file found for this phase."
-          fi
-
-          # Send failure message
-          MESSAGE=$(printf '<code>┌─── ⚠️ [ MISSION.CRITICAL.FAILURE ] ───┐\n│\n│ 📂 FILE: %s\n│ %s PHASE: %s FAILED\n│ ❌ ERROR DETECTED:\n│ %s\n│\n│ 🛠️ STATUS: Core dumped.\n│ 📑 Full log attached below.\n└────────────────────────────────────┘</code>' \
-            "$FILE_NAME" "$PHASE_ICON" "$FAILED_PHASE" "$(echo "$ERROR_SNIPPET" | tail -5 | tr '\n' ' ')")
-
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            -d "{\"chat_id\": \"${CHAT_ID}\", \"text\": $(echo "$MESSAGE" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'), \"parse_mode\": \"HTML\"}"
-
-          # Send full log file as document
-          if [ -f "$LOG_FILE" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
-              -F "chat_id=${CHAT_ID}" \
-              -F "document=@${LOG_FILE}" \
-              -F "caption=📋 ${FAILED_PHASE} phase log — Run #${{ github.run_number }}"
-          fi
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          UI_TITLE: ${{ github.event.inputs.ui_title || 'Unknown' }}
+        run: python3 notify_failure.py
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE SESSION (always, even on failure)

@@ -4,17 +4,12 @@ download.py
 Handles all download routing:
   - Telegram file/message links  → tg_handler.py
   - Magnet links                 → disabled (exit 1)
-  - M3U8 / HLS streams           → yt-dlp + aria2c (segments) + ffmpeg_i headers (AES key)
+  - M3U8 / HLS streams           → aria2c parallel + openssl decrypt + ffmpeg mux
   - Streaming platforms          → yt-dlp + aria2c
   - Direct CDN / file URLs       → aria2c
 
 Reads from env: VIDEO_URL, CUSTOM
 Writes: source.mkv, tg_fname.txt, download.log
-
-Why this works for token-expiry CDNs like uwucdn.top:
-  aria2c handles segment downloads with -x 16 parallelism.
-  ffmpeg_i headers ensure the AES key server (mon.key) also receives
-  the correct Referer + User-Agent, preventing the 403 on key fetch.
 """
 
 import os
@@ -28,21 +23,19 @@ URL    = os.environ.get("VIDEO_URL", "").strip()
 CUSTOM = os.environ.get("CUSTOM", "").strip()
 
 CDN_REFERER_MAP = {
-    "uwucdn.top":         "https://kwik.cx/",
-    "kwik.cx":            "https://kwik.cx/",
-    "animefever":         "https://animefever.tv/",
-    "cache.libria.fun":   "https://www.anilibria.tv/",
-    "delivery.animepahe": "https://animepahe.ru/",
-    "moon-cdn":           "https://gogoanime.cl/",
-    "gogo-cdn":           "https://gogoanime.cl/",
+    "uwucdn.top":        "https://kwik.cx/",
+    "kwik.cx":           "https://kwik.cx/",
+    "animefever":        "https://animefever.tv/",
+    "cache.libria.fun":  "https://www.anilibria.tv/",
+    "delivery.animepahe":"https://animepahe.ru/",
+    "moon-cdn":          "https://gogoanime.cl/",
+    "gogo-cdn":          "https://gogoanime.cl/",
 }
 
 STREAMING_PLATFORMS = [
     "bilibili.com", "nicovideo.jp",
     "vimeo.com", "dailymotion.com", "twitch.tv",
 ]
-
-USER_AGENT = "Mozilla/5.0"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -53,6 +46,7 @@ def run(cmd, check=True, **kwargs):
 
 
 def resolve_filename(url):
+    """Return a .mkv filename for the given URL."""
     if CUSTOM:
         return f"{CUSTOM}.mkv"
     try:
@@ -77,6 +71,18 @@ def detect_referer(url):
     return ""
 
 
+def curl_fetch(url, referer="", output=None):
+    # Use shell=True so curl behaves identically to bash — avoids header
+    # differences that cause 403 on protected key servers
+    out_arg  = f"-o {output}" if output else "-o -"
+    ref_arg  = f'-H "Referer: {referer}"' if referer else ""
+    cmd = f'curl -sL --fail -A "Mozilla/5.0" {ref_arg} {out_arg} "{url}"'
+    result = subprocess.run(cmd, shell=True, capture_output=not output)
+    if result.returncode != 0:
+        raise RuntimeError(f"curl failed (HTTP {result.returncode}) for {url}")
+    return result.stdout if not output else None
+
+
 # ── Download strategies ────────────────────────────────────────────────────
 
 def download_telegram():
@@ -85,34 +91,16 @@ def download_telegram():
 
 
 def download_m3u8(url):
-    print("📡 M3U8 detected — yt-dlp + aria2c + ffmpeg_i headers", flush=True)
+    print("📡 M3U8 detected — yt-dlp parallel download", flush=True)
     referer = detect_referer(url)
 
-    # aria2c args: parallel segment download
-    aria2c_args = (
-        "-x 16 -s 16 -k 1M "
-        "--console-log-level=warn "
-        "--summary-interval=10 "
-        "--retry-wait=5 "
-        "--max-tries=10"
-    )
-
-    # ffmpeg_i args: passed to ffmpeg when it fetches the AES key (mon.key etc.)
-    # Without these, the key server returns 403 because it checks Referer
-    ffmpeg_i_args = (
-        "-allowed_extensions ALL "
-        "-extension_picky 0 "
-        "-protocol_whitelist file,http,https,tcp,tls,crypto"
-    )
-    if referer:
-        ffmpeg_i_args += f" -headers Referer:\\ {referer}\\r\\nUser-Agent:\\ {USER_AGENT}\\r\\n"
-
+    # Use --concurrent-fragments (yt-dlp native) instead of aria2c
+    # yt-dlp passes --add-header to ALL fragment requests natively
+    # aria2c requires separate header forwarding which is fragile on protected streams
     cmd = [
         "yt-dlp",
-        "--add-header", f"User-Agent: {USER_AGENT}",
-        "--downloader", "aria2c",
-        "--downloader-args", f"aria2c:{aria2c_args}",
-        "--downloader-args", f"ffmpeg_i:{ffmpeg_i_args}",
+        "--add-header", "User-Agent: Mozilla/5.0",
+        "--concurrent-fragments", "16",
         "--merge-output-format", "mkv",
         "--force-overwrites",
         "--no-continue",
@@ -120,16 +108,16 @@ def download_m3u8(url):
         url,
     ]
     if referer:
-        cmd[1:1] = ["--add-header", f"Referer: {referer}"]
+        cmd = ["yt-dlp", "--add-header", f"Referer: {referer}"] + cmd[1:]
 
     run(cmd)
 
 
 def download_streaming(url):
-    print("📡 Streaming platform detected — using yt-dlp + aria2c", flush=True)
+    print("📡 Streaming platform detected — using yt-dlp", flush=True)
     run([
         "yt-dlp",
-        "--add-header", f"User-Agent: {USER_AGENT}",
+        "--add-header", "User-Agent:Mozilla/5.0",
         "--downloader", "aria2c",
         "--downloader-args",
         "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn "
@@ -144,14 +132,14 @@ def download_direct(url):
     print("📥 Direct CDN download — resolving URL...", flush=True)
     result = subprocess.run(
         ["curl", "-s", "-o", "/dev/null", "-w", "%{url_effective}", "-L",
-         "-A", USER_AGENT, url],
+         "-A", "Mozilla/5.0", url],
         capture_output=True
     )
     final_url = result.stdout.decode().strip() or url
     print(f"✅ Resolved: {final_url}", flush=True)
     run([
         "aria2c", "-x", "16", "-s", "16", "-k", "1M",
-        f"--user-agent={USER_AGENT}",
+        "--user-agent=Mozilla/5.0",
         "--console-log-level=warn",
         "--summary-interval=10",
         "--retry-wait=5",

@@ -382,6 +382,7 @@ async def main():
         await app.send_document(
             chat_id=CHAT_ID,
             document=output_name,
+            file_name=output_name,
             thumb=THUMBNAIL if has_thumb else None,
             caption=report,
             parse_mode=enums.ParseMode.HTML,

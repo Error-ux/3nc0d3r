@@ -98,10 +98,15 @@ def download_m3u8(url):
     # - Opens a fresh TCP/TLS connection per segment (harder to IP-ban mid-stream)
     # - Passes Referer on every request including AES key fetch via -headers
     # - Proven working on uwucdn.top and similar protected HLS sources
+    # NOTE: headers string must use actual \r\n (CRLF) — same as bash $'...' syntax
+    if referer:
+        headers = f"Referer: {referer}\r\nUser-Agent: Mozilla/5.0\r\n"
+    else:
+        headers = "User-Agent: Mozilla/5.0\r\n"
+
     cmd = [
         "ffmpeg",
-        "-headers", f"Referer: {referer}\r\nUser-Agent: Mozilla/5.0\r\n" if referer
-                    else "User-Agent: Mozilla/5.0\r\n",
+        "-headers", headers,
         "-allowed_extensions", "ALL",
         "-extension_picky", "0",
         "-protocol_whitelist", "file,http,https,tcp,tls,crypto",

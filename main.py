@@ -664,6 +664,7 @@ async def main():
         await app.send_document(
             chat_id=config.CHAT_ID,
             document=config.FILE_NAME,
+            file_name=config.FILE_NAME,
             thumb=thumb,
             caption=report,
             parse_mode=enums.ParseMode.HTML,

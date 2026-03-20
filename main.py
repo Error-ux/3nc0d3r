@@ -259,10 +259,12 @@ async def main():
     # 3. RENAME — build structured output filename if ANIME_NAME is set.
     # If ANIME_NAME is blank, attempt to auto-parse it from the source URL's
     # filename= query param (or path) using anitopy as a fallback.
+    # Skip entirely for anibd.app downloads — filename is already final.
     anime_name = config.ANIME_NAME.strip() if config.ANIME_NAME else ""
     is_special = False
+    _anibd_source = os.path.exists("anibd_source.txt")
 
-    if not anime_name:
+    if not anime_name and not _anibd_source:
         # ── Auto-detect from filename (anitopy) ────────────────────────────
         # Priority: FILE_NAME (Content-Disposition) → VIDEO_URL query param → URL path
         from urllib.parse import urlparse, parse_qs, unquote
@@ -297,7 +299,7 @@ async def main():
                 if not config.EPISODE or not config.EPISODE.strip() or config.EPISODE == "1":
                     config.EPISODE = str(parsed["episode"])
 
-    if anime_name:
+    if anime_name and not _anibd_source:
         rename_height = int(config.USER_RES) if (config.USER_RES and config.USER_RES.strip().isdigit()) else height
         resolved_name, audio_type_label, audio_tracks, sub_tracks = resolve_output_name(
             source               = config.SOURCE,
@@ -683,7 +685,8 @@ async def main():
         # CLEANUP
         try: await status.delete()
         except: pass
-        for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT, *ocr_srt_files]:
+        for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT,
+                   "anibd_source.txt", *ocr_srt_files]:
             if os.path.exists(f): os.remove(f)
 
     except Exception as exc:

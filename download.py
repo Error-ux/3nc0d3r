@@ -34,6 +34,7 @@ RUN_NUMBER = os.environ.get("GITHUB_RUN_NUMBER", "?")
 # ─────────────────────────────────────────────────────────────────────────────
 CDN_REFERER_MAP = {
     "uwucdn.top":          "https://kwik.cx/",
+    "owocdn.top":          "https://kwik.cx/",
     "kwik.cx":             "https://kwik.cx/",
     "animefever":          "https://animefever.tv/",
     "cache.libria.fun":    "https://www.anilibria.tv/",

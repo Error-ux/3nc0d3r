@@ -1,4 +1,4 @@
-1"""
+"""
 download.py
 Handles all source acquisition for the AV1 pipeline.
 
@@ -45,7 +45,7 @@ YTDLP_DOMAINS = (
     "vimeo.com",
     "dailymotion.com",
     "twitch.tv",
-    "kwik.cx",
+    "kwik.cx",      # Cloudflare-protected CDN, requires impersonation
 )
 
 # ─────────────────────────────────────────────────────────────────────────────

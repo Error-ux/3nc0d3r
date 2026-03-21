@@ -23,7 +23,7 @@ import urllib.parse
 # ─────────────────────────────────────────────────────────────────────────────
 # ENV
 # ─────────────────────────────────────────────────────────────────────────────
-URL    = os.environ.get("VIDEO_URL", "").strip()
+URL        = os.environ.get("VIDEO_URL", "").strip()
 CUSTOM     = os.environ.get("CUSTOM", "").strip()
 BOT_TOKEN  = os.environ.get("TG_BOT_TOKEN", "").strip()
 CHAT_ID    = os.environ.get("TG_CHAT_ID", "").strip()
@@ -122,7 +122,6 @@ def detect_referer(url):
     return None, None
 
 
-
 def notify_download_start(method, output_name):
     """Send a Telegram message announcing the download has started."""
     if not BOT_TOKEN or not CHAT_ID:
@@ -210,6 +209,8 @@ def download_direct():
     ).strip()
     print(f"✅ Resolved: {resolved}", flush=True)
 
+    referer, _ = detect_referer(URL)
+
     cmd = [
         "aria2c",
         "-x", "16", "-s", "16", "-k", "1M",
@@ -219,8 +220,13 @@ def download_direct():
         "--retry-wait=5",
         "--max-tries=10",
         "-o", "source.mkv",
-        resolved,
     ]
+
+    if referer:
+        cmd += [f"--header=Referer: {referer}"]
+        print(f"🔗 Sending referer for direct download: {referer}", flush=True)
+
+    cmd.append(resolved)
     print(f"📥 Direct download → aria2c  [{output_name}]", flush=True)
     run(cmd, label="aria2c")
 
@@ -244,7 +250,7 @@ def route():
         print("❌ ERROR: Magnet links are disabled.", flush=True)
         sys.exit(1)
 
-    # ── anibd.app → Anidb.py ──────────────────────────────────────────────────
+    # ── anibd.app → Anidb.py ─────────────────────────────────────────────────
     if "anibd.app" in URL:
         import Anidb
         Anidb.download(URL)

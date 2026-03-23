@@ -15,7 +15,7 @@ on:
         description: 'Resolution'
       custom_crf:
         description: 'CRF'
-        default: '42'
+        default: '48'
       custom_preset:
         description: 'Preset'
         default: '5'

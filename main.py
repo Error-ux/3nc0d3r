@@ -142,7 +142,7 @@ async def main():
     # CRF and preset come directly from bridge inputs — no auto-selection.
     # Bridge always sends explicit values (defaults: CRF 50, Preset 8).
     final_crf    = config.USER_CRF    if (config.USER_CRF    and config.USER_CRF.strip())    else "48"
-    final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else "5"
+    final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else "6"
 
     res_label = config.USER_RES if (config.USER_RES and config.USER_RES.strip()) else None
     crop_val  = get_crop_params(duration)
@@ -197,12 +197,24 @@ async def main():
         grain_val = max(0, min(50, int(config.USER_GRAIN or 0)))
     except (ValueError, TypeError):
         grain_val = 0
+
+    # -- DYNAMIC LA-DEPTH --
+    # Scale lookahead to content length. la-depth=60 is the original safe default.
+    # Only bump up for short content where extra lookahead won't cause timeouts.
+    if duration < 300:       # < 5 min  — shorts, OPs, EDs, demos
+        la_depth = 90
+    elif duration < 1500:    # < 25 min — standard episodes
+        la_depth = 60
+    else:                    # 25 min+  — movies, long OVAs
+        la_depth = 60
+    print(f"[svtav1] la-depth={la_depth} (duration={duration:.0f}s)")
+
     svtav1_tune = (
         f"tune=0:film-grain={grain_val}:enable-overlays=1:"
         f"aq-mode=2:variance-boost-strength=2:variance-octile=6:"
         f"enable-qm=1:qm-min=0:qm-max=8:sharpness=1:"
-        f"enable-tf=1:scd=1:"                               # temporal filtering + scene-change detection
-        f"pin=0:lp=4:tile-columns=1:tile-rows=1:la-depth=120"  # lp=4 matches 4 CPUs; 1 tile-col avoids overhead
+        f"scd=1:"                                            # scene-change detection
+        f"pin=0:lp=4:tile-columns=1:tile-rows=1:la-depth={la_depth}"  # lp=4 matches 4 CPUs
     )
 
     # UI Labels

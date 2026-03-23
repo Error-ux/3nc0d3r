@@ -31,7 +31,7 @@ def get_video_info():
     except (ValueError, ZeroDivisionError):
         fps_val = 24.0
 
-    total_frames = int(video_stream.get('nb_frames', duration * fps_val))
+    total_frames = int(round(float(video_stream.get('nb_frames') or 0) or duration * fps_val))
     is_hdr       = 'bt2020' in video_stream.get('color_primaries', 'bt709')
     return duration, width, height, is_hdr, total_frames, channels, fps_val
 
@@ -51,7 +51,7 @@ async def async_generate_thumbnail(duration, target_file):
 
 def get_crop_params(duration):
     if duration < 10: return None
-    test_points    = [duration * 0.15, duration * 0.35, duration * 0.55, duration * 0.75]
+    test_points    = [duration * 0.05, duration * 0.20, duration * 0.40, duration * 0.60, duration * 0.80, duration * 0.90]
     detected_crops = []
     for ts in test_points:
         time_str = time.strftime('%H:%M:%S', time.gmtime(ts))
@@ -67,7 +67,7 @@ def get_crop_params(duration):
         except: continue
     if not detected_crops: return None
     most_common_crop, count = Counter(detected_crops).most_common(1)[0]
-    if count >= 3:
+    if count >= 4:
         w, h, x, y = most_common_crop.split(':')
         if int(x) == 0 and int(y) == 0: return None
         return most_common_crop
@@ -176,10 +176,12 @@ async def get_vmaf(output_file, crop_val, width, height, duration, fps, kv_write
 
 
 def select_params(height):
-    if height >= 2000: return 28, 10
-    elif height >= 1000: return 42, 6
-    elif height >= 700:  return 32, 6
-    return 24, 4
+    # Fallback params used only when the bridge sends no CRF/preset.
+    # Tuned to match typical AV1 quality targets per resolution.
+    if height >= 2000: return 35, 8   # 4K
+    elif height >= 1000: return 48, 8  # 1080p
+    elif height >= 700:  return 50, 8  # 720p
+    return 52, 6                       # 480p and below
 
 
 
@@ -277,15 +279,12 @@ async def upload_to_cloud(filepath, app=None, chat_id=None, status_msg=None):
         if upload_data.get("status") != "ok":
             raise ValueError(f"Gofile upload error: {upload_data}")
 
-        file_id    = upload_data["data"]["id"]
-        page_url   = upload_data["data"]["downloadPage"]
+        page_url = upload_data["data"]["downloadPage"]
 
-        # Direct link: https://{server}.gofile.io/download/web/{fileId}/{fileName}
-        encoded_name = quote(filename, safe="")
-        direct_url   = f"https://{server}.gofile.io/download/web/{file_id}/{encoded_name}"
-
+        # Use downloadPage only — direct URL is tied to the upload server node
+        # which may rotate or differ from the CDN edge serving downloads.
         return {
-            "direct": direct_url,
+            "direct": page_url,
             "page":   page_url,
             "source": "gofile"
         }

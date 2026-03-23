@@ -14,8 +14,8 @@ on:
       res_choice:
         description: 'Resolution'
       custom_crf:
-        description: 'CRF'
-        default: '55'
+        description: 'CRF (leave blank for auto when Mini Encode is on)'
+        default: ''
       custom_preset:
         description: 'Preset'
         default: '6'

@@ -14,20 +14,20 @@ on:
       res_choice:
         description: 'Resolution'
       custom_crf:
-        description: 'CRF (leave blank for auto when Mini Encode is on)'
-        default: ''
+        description: 'CRF'
+        default: '42'
       custom_preset:
         description: 'Preset'
-        default: '6'
+        default: '5'
       film_grain:
         description: 'Grain'
-        default: '0'
+        default: '10'
       audio_mode:
         description: 'Audio Mode'
         default: 'opus'
       audio_bitrate:
         description: 'Audio Bitrate'
-        default: '64k'
+        default: '48k'
       run_vmaf:
         description: 'Run VMAF?'
         default: 'true'
@@ -61,15 +61,6 @@ on:
       demo_duration:
         description: 'Demo Duration in seconds (leave blank for full encode)'
         default: ''
-      mini_encode:
-        description: 'Mini Encode? (true/false) — VMAF-guided CRF, Opus, AV1 size-optimised'
-        default: 'false'
-      target_vmaf:
-        description: 'Mini: Target VMAF floor (e.g. 93)'
-        default: '93'
-      max_size_mb:
-        description: 'Mini: Max projected size in MB (e.g. 60)'
-        default: '60'
 
 
 permissions:
@@ -285,9 +276,6 @@ jobs:
           AUDIO_TRACKS: ${{ github.event.inputs.audio_tracks }}
           DEMO_START: ${{ github.event.inputs.demo_start }}
           DEMO_DURATION: ${{ github.event.inputs.demo_duration }}
-          MINI_ENCODE: ${{ github.event.inputs.mini_encode }}
-          TARGET_VMAF: ${{ github.event.inputs.target_vmaf }}
-          MAX_SIZE_MB: ${{ github.event.inputs.max_size_mb }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
           ANIDB_USER: ${{ secrets.ANIDB_USER }}
           ANIDB_PASS: ${{ secrets.ANIDB_PASS }}

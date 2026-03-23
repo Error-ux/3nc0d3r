@@ -21,7 +21,7 @@ on:
         default: '6'
       film_grain:
         description: 'Grain'
-        default: '10'
+        default: '0'
       audio_mode:
         description: 'Audio Mode'
         default: 'opus'
@@ -33,7 +33,7 @@ on:
         default: 'true'
       run_upload:
         description: 'Upload to Gofile?'
-        default: 'true'
+        default: 'false'
       anime_name:
         description: 'Anime Name (leave blank to skip rename)'
         default: ''

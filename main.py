@@ -257,9 +257,9 @@ async def main():
         return
 
     # 3. RENAME — build structured output filename if ANIME_NAME is set.
-    # If ANIME_NAME is blank, attempt to auto-parse it from the source URL's
-    # filename= query param (or path) using anitopy as a fallback.
-    # Skip entirely for anibd.app downloads — filename is already final.
+    # If ANIME_NAME is blank, attempt to auto-parse it from the source filename
+    # using anitopy as a fallback. Auto-detect is skipped for anibd.app downloads
+    # (filename is already final), but an explicit ANIME_NAME always applies.
     anime_name = config.ANIME_NAME.strip() if config.ANIME_NAME else ""
     is_special = False
     _anibd_source = os.path.exists("anibd_source.txt")
@@ -299,7 +299,9 @@ async def main():
                 if not config.EPISODE or not config.EPISODE.strip() or config.EPISODE == "1":
                     config.EPISODE = str(parsed["episode"])
 
-    if anime_name and not _anibd_source:
+    if anime_name:
+        # Explicit ANIME_NAME (rename ON) or auto-detected name — build structured filename.
+        # _anibd_source only blocked auto-detect above; explicit renames always apply.
         rename_height = int(config.USER_RES) if (config.USER_RES and config.USER_RES.strip().isdigit()) else height
         resolved_name, audio_type_label, audio_tracks, sub_tracks = resolve_output_name(
             source               = config.SOURCE,
@@ -314,7 +316,7 @@ async def main():
         config.FILE_NAME = resolved_name
         print(f"[rename] Output → {resolved_name}  |  Audio: {audio_type_label}")
     else:
-        # No rename requested — probe tracks for report only
+        # No rename — probe tracks for report only
         from rename import get_track_info
         audio_tracks, sub_tracks = get_track_info(config.SOURCE)
         audio_type_label = None

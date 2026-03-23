@@ -107,7 +107,7 @@ jobs:
       - name: 🔍 Get PSYEX Commit SHA
         id: psyex-sha
         run: |
-          SHA=$(curl -s https://api.github.com/repos/BlueSwordM/svt-av1-psyex/commits/master             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}"             | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'][:8])")
+          SHA=$(curl -s https://api.github.com/repos/5fish/svt-av1-psy/commits/main             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}"             | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'][:8])")
           echo "sha=$SHA" >> $GITHUB_OUTPUT
           echo "PSYEX SHA: $SHA"
 
@@ -116,7 +116,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/ff*
-          key: ffmpeg-psyex-v2-${{ steps.psyex-sha.outputs.sha }}-${{ runner.os }}
+          key: ffmpeg-5fish-v1-${{ steps.psyex-sha.outputs.sha }}-${{ runner.os }}
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE: apt packages (aria2, mkvtoolnix, curl)
@@ -196,7 +196,7 @@ jobs:
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
           echo "📦 Installing build dependencies..."
-          sudo apt-get install -y             cmake nasm yasm pkg-config meson ninja-build             libopus-dev libssl-dev zlib1g-dev
+          sudo apt-get install -y             cmake nasm yasm pkg-config meson ninja-build             clang lld             libopus-dev libssl-dev zlib1g-dev
 
           echo "🔨 Building libvmaf from source..."
           git clone https://github.com/Netflix/vmaf --depth=1
@@ -211,26 +211,35 @@ jobs:
           rm -rf vmaf
           echo "✅ libvmaf installed"
 
-          echo "🔨 Building SVT-AV1-PSYEX..."
-          git clone https://github.com/BlueSwordM/svt-av1-psyex --depth=1
-          cmake -B svt-av1-psyex/Build             -S svt-av1-psyex             -DCMAKE_BUILD_TYPE=Release             -DBUILD_SHARED_LIBS=ON             -DCMAKE_INSTALL_PREFIX=/usr/local             -DSVT_AV1_LTO=ON
-          cmake --build svt-av1-psyex/Build --parallel $(nproc)
-          sudo cmake --install svt-av1-psyex/Build
+          echo "🔨 Building 5fish/SVT-AV1-PSY..."
+          git clone https://github.com/5fish/svt-av1-psy --depth=1
+          # Build with clang + LTO + PGO as recommended by 5fish docs
+          cd svt-av1-psy
+          CC=clang CXX=clang++ bash Build/linux/build.sh             --release --enable-lto --static
+          cd ..
+          # Install the built binary and lib
+          sudo install -m755 svt-av1-psy/Bin/Release/SvtAv1EncApp /usr/local/bin/
+          sudo install -m644 svt-av1-psy/Bin/Release/libSvtAv1Enc.a /usr/local/lib/ 2>/dev/null || true
+          # Also install headers so FFmpeg can link against it
+          sudo cp -r svt-av1-psy/include /usr/local/include/svt-av1 2>/dev/null || true
+          sudo cp svt-av1-psy/Bin/Release/*.pc /usr/local/lib/pkgconfig/ 2>/dev/null || true
           echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/local.conf
           sudo ldconfig
-          echo "✅ SVT-AV1-PSYEX installed"
+          echo "✅ 5fish/SVT-AV1-PSY installed"
 
-          echo "🔨 Building FFmpeg with PSYEX..."
+          echo "🔨 Building FFmpeg with 5fish/SVT-AV1-PSY..."
           git clone https://github.com/FFmpeg/FFmpeg --depth=1 --branch master ffmpeg-src
           cd ffmpeg-src
-          ./configure             --prefix=/usr/local             --enable-gpl             --enable-version3             --enable-nonfree             --enable-libsvtav1             --enable-libopus             --enable-libvmaf             --disable-debug             --disable-doc             --disable-ffplay             --enable-optimizations             --enable-lto
+          # pkg-config path so FFmpeg finds 5fish's SvtAv1Enc
+          export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
+          ./configure             --prefix=/usr/local             --enable-gpl             --enable-version3             --enable-nonfree             --enable-libsvtav1             --enable-libopus             --enable-libvmaf             --disable-debug             --disable-doc             --disable-ffplay             --enable-optimizations             --enable-lto             --cc=clang --cxx=clang++
           make -j$(nproc)
           sudo make install
           echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/local.conf
           sudo ldconfig
           cd ..
-          rm -rf ffmpeg-src svt-av1-psyex
-          echo "✅ FFmpeg with PSYEX ready — $(ffmpeg -version | head -1)"
+          rm -rf ffmpeg-src svt-av1-psy
+          echo "✅ FFmpeg with 5fish/SVT-AV1-PSY ready — $(ffmpeg -version | head -1)"
 
       # Ensure /usr/local/lib is registered for shared libs (libvmaf, libSvtAv1Enc)
       # Required both after a fresh build AND after cache restore.

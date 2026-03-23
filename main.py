@@ -391,6 +391,17 @@ async def main():
     )
     tg_connect_start = time.time()   # record when we started waiting for TG
 
+    # Build action buttons once — reused on every progress edit during encoding.
+    # Button 1: URL button → opens the GitHub Actions log directly (no callback needed).
+    # Button 2: kill_{run_id} callback → handled by the bridge Worker which cancels the run.
+    _gh_repo = os.getenv("GITHUB_REPOSITORY", "")
+    _run_id  = config.GITHUB_RUN_ID
+    _log_url = f"https://github.com/{_gh_repo}/actions/runs/{_run_id}"
+    encode_buttons = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📋 Open Log",   url=_log_url),
+        InlineKeyboardButton("🛑 Terminate",  callback_data=f"kill_{_run_id}"),
+    ]])
+
     # 5. ENCODING EXECUTION (starts immediately, does not wait for TG)
 
     # -- PGS SUBTITLE REMOVAL --
@@ -516,7 +527,7 @@ async def main():
                         last_progress_pct = milestone
                         last_update_time  = now
                         # Only sends if TG is already ready; otherwise silently buffered
-                        await tg_edit(tg_state, tg_ready, scifi_ui)
+                        await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
 
                 except Exception:
                     continue
@@ -551,7 +562,7 @@ async def main():
     try:
         # Push the last progress frame in case TG connected after encoding ended
         if last_ui_text:
-            await tg_edit(tg_state, tg_ready, last_ui_text)
+            await tg_edit(tg_state, tg_ready, last_ui_text, reply_markup=encode_buttons)
 
         # 6. ERROR HANDLING
         if process.returncode != 0:

@@ -109,7 +109,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/ffmpeg-5fish
-          key: ffmpeg-5fish-v5-${{ runner.os }}
+          key: ffmpeg-5fish-v6-${{ runner.os }}
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE: apt packages (aria2, mkvtoolnix, curl)
@@ -188,6 +188,9 @@ jobs:
       - name: 🔨 Build 5fish/SVT-AV1-PSY + FFmpeg
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
+          # Set PKG_CONFIG_PATH once for the entire build step
+          export PKG_CONFIG_PATH="/opt/ffmpeg-5fish/lib/pkgconfig:$PKG_CONFIG_PATH"
+
           echo "📦 Installing build dependencies..."
           sudo apt-get install -y             cmake nasm yasm pkg-config meson ninja-build             clang lld             libopus-dev libssl-dev zlib1g-dev
 
@@ -219,8 +222,7 @@ jobs:
           git clone https://github.com/FFmpeg/FFmpeg --depth=1 --branch master ffmpeg-src
           cd ffmpeg-src
           # pkg-config path so FFmpeg finds 5fish's SvtAv1Enc
-          export PKG_CONFIG_PATH="/opt/ffmpeg-5fish/lib/pkgconfig:$PKG_CONFIG_PATH"
-          ./configure             --prefix=/opt/ffmpeg-5fish             --enable-gpl             --enable-version3             --enable-nonfree             --enable-libsvtav1             --enable-libopus             --enable-libvmaf             --disable-debug             --disable-doc             --disable-ffplay             --enable-optimizations             --cc=clang --cxx=clang++ --ld=clang             --extra-ldflags="-fuse-ld=lld"
+          PKG_CONFIG_PATH="/opt/ffmpeg-5fish/lib/pkgconfig" ./configure             --prefix=/opt/ffmpeg-5fish             --enable-gpl             --enable-version3             --enable-nonfree             --enable-libsvtav1             --enable-libopus             --enable-libvmaf             --disable-debug             --disable-doc             --disable-ffplay             --enable-optimizations             --cc=clang --cxx=clang++ --ld=clang             --extra-ldflags="-fuse-ld=lld"
           make -j$(nproc)
           sudo make install
           echo "/opt/ffmpeg-5fish/lib" | sudo tee /etc/ld.so.conf.d/ffmpeg-5fish.conf

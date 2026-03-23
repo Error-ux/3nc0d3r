@@ -129,6 +129,12 @@ jobs:
             echo "✅ apt packages restored"
           else
             echo "📥 Installing apt packages..."
+            # MKVToolNix from official repo — avoids libmatroska version mismatches
+            # that occur with the Ubuntu apt version (libmatroska.so.7 errors).
+            sudo wget -q -O /usr/share/keyrings/gpg-pub-moritzbunkus.gpg \
+              https://mkvtoolnix.download/gpg-pub-moritzbunkus.gpg
+            echo "deb [signed-by=/usr/share/keyrings/gpg-pub-moritzbunkus.gpg] https://mkvtoolnix.download/ubuntu/ $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/mkvtoolnix.list
             sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl
             echo "💾 Saving apt packages to cache..."
             mkdir -p /tmp/apt-cache/usr

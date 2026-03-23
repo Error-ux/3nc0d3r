@@ -116,7 +116,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/ff*
-          key: ffmpeg-5fish-v2-${{ steps.psyex-sha.outputs.sha }}-${{ runner.os }}
+          key: ffmpeg-5fish-v3-${{ steps.psyex-sha.outputs.sha }}-${{ runner.os }}
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE: apt packages (aria2, mkvtoolnix, curl)
@@ -227,7 +227,7 @@ jobs:
           cd ffmpeg-src
           # pkg-config path so FFmpeg finds 5fish's SvtAv1Enc
           export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
-          ./configure             --prefix=/usr/local             --enable-gpl             --enable-version3             --enable-nonfree             --enable-libsvtav1             --enable-libopus             --enable-libvmaf             --disable-debug             --disable-doc             --disable-ffplay             --enable-optimizations             --enable-lto             --cc=clang --cxx=clang++
+          ./configure             --prefix=/usr/local             --enable-gpl             --enable-version3             --enable-nonfree             --enable-libsvtav1             --enable-libopus             --enable-libvmaf             --disable-debug             --disable-doc             --disable-ffplay             --enable-optimizations             --cc=clang --cxx=clang++ --ld=clang             --extra-ldflags="-fuse-ld=lld"
           make -j$(nproc)
           sudo make install
           echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/local.conf

@@ -141,7 +141,7 @@ async def main():
     # 4. PARAMETER CONFIGURATION
     # CRF and preset come directly from bridge inputs — no auto-selection.
     # Bridge always sends explicit values (defaults: CRF 50, Preset 8).
-    final_crf    = config.USER_CRF    if (config.USER_CRF    and config.USER_CRF.strip())    else "42"
+    final_crf    = config.USER_CRF    if (config.USER_CRF    and config.USER_CRF.strip())    else "48"
     final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else "5"
 
     res_label = config.USER_RES if (config.USER_RES and config.USER_RES.strip()) else None
@@ -173,8 +173,21 @@ async def main():
     res_label = res_label or f"Original({detect_quality(height)})"
 
     # -- AUDIO CONFIGURATION --
+    # If the source is already Opus, copy it losslessly to avoid generation loss.
+    # Otherwise re-encode to Opus at the configured bitrate.
     final_audio_bitrate = config.AUDIO_BITRATE if (config.AUDIO_BITRATE and config.AUDIO_BITRATE.strip()) else "48k"
-    audio_cmd           = ["-af", "aformat=channel_layouts=stereo", "-c:a", "libopus", "-b:a", final_audio_bitrate, "-vbr", "on"]
+    source_audio_codec = next(
+        (t.get("codec", "").lower() for t in audio_tracks), ""
+    )
+    if "opus" in source_audio_codec:
+        # Source is already Opus — copy losslessly, skip re-encode generation loss
+        audio_cmd = ["-c:a", "copy"]
+        final_audio_bitrate = "copy"
+        print(f"[audio] Source is Opus — copying losslessly (no re-encode)")
+    else:
+        audio_cmd = ["-af", "aformat=channel_layouts=stereo", "-c:a", "libopus",
+                     "-b:a", final_audio_bitrate, "-vbr", "on"]
+        print(f"[audio] Re-encoding to Opus @ {final_audio_bitrate}")
 
     # -- SVT-AV1 PARAMETERS --
     # pin=0 is required for GitHub Actions (virtualized VMs don't honour CPU affinity).
@@ -188,8 +201,8 @@ async def main():
         f"tune=0:film-grain={grain_val}:enable-overlays=1:"
         f"aq-mode=2:variance-boost-strength=2:variance-octile=6:"
         f"enable-qm=1:qm-min=0:qm-max=8:sharpness=1:"
-        f"enable-tf=1:scd=1:"                              # temporal filtering + scene-change detection
-        f"pin=0:lp=8:tile-columns=2:tile-rows=1:la-depth=120"  # extended lookahead for better bit distribution
+        f"enable-tf=1:scd=1:"                               # temporal filtering + scene-change detection
+        f"pin=0:lp=4:tile-columns=1:tile-rows=1:la-depth=120"  # lp=4 matches 4 CPUs; 1 tile-col avoids overhead
     )
 
     # UI Labels

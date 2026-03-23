@@ -113,13 +113,12 @@ async def main():
             if parsed:
                 anime_name = parsed["anime_name"]
                 is_special = parsed["is_special"]
-                # Only override season/episode if bridge didn't send explicit values
-                if not config.SEASON or not config.SEASON.strip() or config.SEASON == "1":
-                    config.SEASON  = str(parsed["season"])
-                if not config.EPISODE or not config.EPISODE.strip() or config.EPISODE == "1":
-                    config.EPISODE = str(parsed["episode"])
+                # Rename OFF: bridge's episode/season are sequential placeholders —
+                # always trust what was detected from the actual filename.
+                config.SEASON  = str(parsed["season"])
+                config.EPISODE = str(parsed["episode"])
 
-    if anime_name and not _anibd_source:
+    if anime_name:
         rename_height = int(config.USER_RES) if (config.USER_RES and config.USER_RES.strip().isdigit()) else height
         resolved_name, audio_type_label, audio_tracks, sub_tracks = resolve_output_name(
             source               = config.SOURCE,
@@ -226,6 +225,17 @@ async def main():
         connect_telegram(tg_state, tg_ready, config.FILE_NAME)
     )
     tg_connect_start = time.time()   # record when we started waiting for TG
+
+    # Build action buttons once — shown on every progress edit during encoding.
+    # Button 1: URL → opens GitHub Actions log directly (no callback needed).
+    # Button 2: kill_{run_id} → bridge Worker cancels the run.
+    _gh_repo = os.getenv("GITHUB_REPOSITORY", "")
+    _run_id  = config.GITHUB_RUN_ID
+    _log_url = f"https://github.com/{_gh_repo}/actions/runs/{_run_id}"
+    encode_buttons = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📋 Open Log",  url=_log_url),
+        InlineKeyboardButton("🛑 Terminate", callback_data=f"kill_{_run_id}"),
+    ]])
 
     # 5. ENCODING EXECUTION (starts immediately, does not wait for TG)
 
@@ -347,7 +357,7 @@ async def main():
                         last_progress_pct = milestone
                         last_update_time  = now
                         # Only sends if TG is already ready; otherwise silently buffered
-                        await tg_edit(tg_state, tg_ready, scifi_ui)
+                        await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
 
                 except Exception:
                     continue
@@ -382,7 +392,7 @@ async def main():
     try:
         # Push the last progress frame in case TG connected after encoding ended
         if last_ui_text:
-            await tg_edit(tg_state, tg_ready, last_ui_text)
+            await tg_edit(tg_state, tg_ready, last_ui_text, reply_markup=encode_buttons)
 
         # 6. ERROR HANDLING
         if process.returncode != 0:

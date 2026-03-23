@@ -15,166 +15,13 @@ from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
-from media import async_generate_grid, get_vmaf, upload_to_cloud
+from media import async_generate_thumbnail, get_vmaf, upload_to_cloud
 from rename import format_track_report
-from ui import format_time, upload_progress, get_failure_ui
+from ui import format_time, upload_progress
+from tg_utils import connect_telegram, tg_edit, tg_notify_failure, ALL_LANES, _resolve_lane, _resolve_session_names
 import ui as _ui
 
 
-# ---------------------------------------------------------------------------
-# LANE RESOLUTION — identical to main.py
-# ---------------------------------------------------------------------------
-ALL_LANES = [chr(ord("A") + i) for i in range(20)]
-
-def _resolve_lane(run_number: int) -> str:
-    return ALL_LANES[run_number % 20]
-
-def _resolve_session_names() -> list[str]:
-    run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
-    lane = _resolve_lane(run_number)
-    print(f"Upload session lane: {lane} (run #{run_number})")
-    other_lanes = [l for l in ALL_LANES if l != lane]
-    sessions = []
-    sessions.append(f"tg_session_dir/enc_session_{lane}")
-    sessions.append(f"tg_session_dir/tg_dl_session_{lane}")
-    for other in other_lanes:
-        sessions.append(f"tg_session_dir/enc_session_{other}")
-        sessions.append(f"tg_session_dir/tg_dl_session_{other}")
-    sessions.append(config.SESSION_NAME)
-    return sessions
-
-
-# ---------------------------------------------------------------------------
-# CONNECT TELEGRAM — identical to main.py
-# ---------------------------------------------------------------------------
-async def connect_telegram(tg_state: dict, tg_ready: asyncio.Event, label: str):
-    session_names = _resolve_session_names()
-    flood_waits: dict[str, int] = {}
-
-    app = None
-    for session_name in session_names:
-        try:
-            candidate = Client(
-                session_name,
-                api_id=config.API_ID,
-                api_hash=config.API_HASH,
-                bot_token=config.BOT_TOKEN,
-            )
-            await candidate.start()
-            app = candidate
-            print(f"TG auth OK with session: {session_name}")
-            break
-        except FloodWait as e:
-            flood_waits[session_name] = e.value
-            print(f"FloodWait {e.value}s on '{session_name}' — trying next...")
-            continue
-        except Exception as e:
-            print(f"TG auth error on '{session_name}': {e} — trying next...")
-            continue
-
-    if app is None and flood_waits:
-        best_session = min(flood_waits, key=flood_waits.get)
-        wait_secs = flood_waits[best_session]
-        attempt = 0
-        while True:
-            attempt += 1
-            print(f"All sessions flooded. Sleeping {wait_secs}s (attempt {attempt})...")
-            await asyncio.sleep(wait_secs + 5)
-            try:
-                candidate = Client(
-                    best_session,
-                    api_id=config.API_ID,
-                    api_hash=config.API_HASH,
-                    bot_token=config.BOT_TOKEN,
-                )
-                await candidate.start()
-                app = candidate
-                print(f"TG auth OK (post-flood attempt {attempt}): {best_session}")
-                break
-            except FloodWait as e:
-                wait_secs = e.value
-                print(f"Another FloodWait: {wait_secs}s — retrying...")
-                continue
-            except Exception as e:
-                print(f"TG auth failed on post-flood attempt {attempt}: {e}")
-                return
-
-    if app is None:
-        print("TG auth failed: no usable session found.")
-        return
-
-    try:
-        status = await app.send_message(
-            config.CHAT_ID,
-            f"<b>[ UPLINK PHASE ] Preparing: {label}</b>",
-            parse_mode=enums.ParseMode.HTML,
-        )
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-        status = await app.send_message(
-            config.CHAT_ID,
-            f"<b>[ UPLINK PHASE ] Preparing: {label}</b>",
-            parse_mode=enums.ParseMode.HTML,
-        )
-
-    tg_state["app"] = app
-    tg_state["status"] = status
-    tg_ready.set()
-    print("Telegram connected.")
-
-
-# ---------------------------------------------------------------------------
-# TG EDIT — identical to main.py
-# ---------------------------------------------------------------------------
-async def tg_edit(tg_state: dict, tg_ready: asyncio.Event, text: str, reply_markup=None):
-    if not tg_ready.is_set():
-        return
-    app    = tg_state.get("app")
-    status = tg_state.get("status")
-    if not app or not status:
-        return
-    try:
-        kwargs = dict(parse_mode=enums.ParseMode.HTML)
-        if reply_markup:
-            kwargs["reply_markup"] = reply_markup
-        await app.edit_message_text(config.CHAT_ID, status.id, text, **kwargs)
-    except FloodWait as e:
-        await asyncio.sleep(e.value + 1)
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
-# FAILURE NOTIFIER — identical to main.py
-# ---------------------------------------------------------------------------
-async def tg_notify_failure(tg_state: dict, tg_ready: asyncio.Event,
-                            file_name: str, reason: str):
-    app    = tg_state.get("app")
-    status = tg_state.get("status")
-    if not app or not status:
-        print(f"[TG-FAIL] TG unavailable — reason: {reason}")
-        return
-    try:
-        await app.edit_message_text(
-            config.CHAT_ID, status.id,
-            get_failure_ui(file_name, reason, phase="UPLOAD"),
-            parse_mode=enums.ParseMode.HTML,
-        )
-    except Exception as e:
-        print(f"[TG-FAIL] Could not edit status: {e}")
-    if os.path.exists(config.LOG_FILE):
-        try:
-            await app.send_document(
-                config.CHAT_ID, config.LOG_FILE,
-                caption="<b>FULL MISSION LOG</b>",
-                parse_mode=enums.ParseMode.HTML,
-            )
-        except Exception as e:
-            print(f"[TG-FAIL] Could not send log: {e}")
-
-
-# ---------------------------------------------------------------------------
-# MAIN
 # ---------------------------------------------------------------------------
 async def main():
     # ── Load encode results ───────────────────────────────────────────────
@@ -249,7 +96,7 @@ async def main():
         # 2. GRID + GOFILE concurrently
         final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
 
-        grid_task = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
+        grid_task = asyncio.create_task(async_generate_thumbnail(duration, config.FILE_NAME))
 
         if config.RUN_UPLOAD:
             await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.CLOUD ] Uploading to Gofile...</b>")

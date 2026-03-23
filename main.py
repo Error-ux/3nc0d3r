@@ -184,28 +184,11 @@ async def main():
         grain_val = max(0, min(50, int(config.USER_GRAIN or 0)))
     except (ValueError, TypeError):
         grain_val = 0
-    # ── 5fish/SVT-AV1-PSY params ────────────────────────────────────────────
-    # 5fish is anime-optimised. Only 4 params need tuning:
-    # preset, crf (set by user), lineart-psy-bias, texture-psy-bias.
-    #
-    # lineart-psy-bias: controls line art retention
-    #   3 = good for most anime (clean lines)
-    #   4 = more focus on weak lineart
-    #   5+ = aggressive weak lineart — may cause issues on texture-heavy sources
-    #
-    # texture-psy-bias: controls texture/grain retention
-    #   2 = clean anime with little texture
-    #   3 = occasional texture (default, good general setting)
-    #   4 = detailed texture sources
-    #   5+ = very texture-heavy or grainy sources
-    #
-    # For mini encodes (your use case: 30-60MB / 24min), preset 2-4, crf 28-35.
-    # film-grain: pass through user setting for synthetic grain synthesis.
     svtav1_tune = (
-        f"film-grain={grain_val}:"
-        f"lineart-psy-bias=3:"          # clean anime lines — good for most BD sources
-        f"texture-psy-bias=3:"          # balanced texture retention
-        f"pin=0:lp=8:tile-columns=2:tile-rows=1"  # threading for GitHub Actions
+        f"tune=0:film-grain={grain_val}:enable-overlays=1:"
+        f"aq-mode=2:variance-boost-strength=2:variance-octile=6:"
+        f"enable-qm=1:qm-min=0:qm-max=8:sharpness=1:"
+        f"pin=0:lp=8:tile-columns=2:tile-rows=1:la-depth=60"
     )
 
     # UI Labels

@@ -116,7 +116,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/ff*
-          key: ffmpeg-5fish-v1-${{ steps.psyex-sha.outputs.sha }}-${{ runner.os }}
+          key: ffmpeg-5fish-v2-${{ steps.psyex-sha.outputs.sha }}-${{ runner.os }}
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE: apt packages (aria2, mkvtoolnix, curl)
@@ -213,19 +213,14 @@ jobs:
 
           echo "🔨 Building 5fish/SVT-AV1-PSY..."
           git clone https://github.com/5fish/svt-av1-psy --depth=1
-          # Build with clang + LTO + PGO as recommended by 5fish docs
-          cd svt-av1-psy
-          CC=clang CXX=clang++ bash Build/linux/build.sh             --release --enable-lto --static
-          cd ..
-          # Install the built binary and lib
-          sudo install -m755 svt-av1-psy/Bin/Release/SvtAv1EncApp /usr/local/bin/
-          sudo install -m644 svt-av1-psy/Bin/Release/libSvtAv1Enc.a /usr/local/lib/ 2>/dev/null || true
-          # Also install headers so FFmpeg can link against it
-          sudo cp -r svt-av1-psy/include /usr/local/include/svt-av1 2>/dev/null || true
-          sudo cp svt-av1-psy/Bin/Release/*.pc /usr/local/lib/pkgconfig/ 2>/dev/null || true
+          cmake -B svt-av1-psy/Build             -S svt-av1-psy             -DCMAKE_BUILD_TYPE=Release             -DBUILD_SHARED_LIBS=ON             -DCMAKE_INSTALL_PREFIX=/usr/local             -DCMAKE_C_COMPILER=clang             -DCMAKE_CXX_COMPILER=clang++             -DSVT_AV1_LTO=ON
+          cmake --build svt-av1-psy/Build --parallel $(nproc)
+          sudo cmake --install svt-av1-psy/Build
           echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/local.conf
           sudo ldconfig
-          echo "✅ 5fish/SVT-AV1-PSY installed"
+          # Verify pkg-config can find it
+          pkg-config --modversion SvtAv1Enc && echo "✅ 5fish/SVT-AV1-PSY installed" || echo "⚠️ pkg-config not found, checking manually..."
+          ls /usr/local/lib/pkgconfig/SvtAv1Enc* 2>/dev/null || true
 
           echo "🔨 Building FFmpeg with 5fish/SVT-AV1-PSY..."
           git clone https://github.com/FFmpeg/FFmpeg --depth=1 --branch master ffmpeg-src

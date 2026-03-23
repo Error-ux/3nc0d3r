@@ -11,8 +11,9 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import config
 from media import get_video_info, get_crop_params, select_params, async_generate_thumbnail, get_vmaf, upload_to_cloud
 from rename import lang_code_to_name
-from ui import get_encode_ui, format_time, upload_progress, get_failure_ui, get_cancelled_ui, get_vmaf_ui
+from ui import get_encode_ui, format_time, upload_progress, get_cancelled_ui, get_vmaf_ui
 from rename import resolve_output_name, format_track_report
+from tg_utils import connect_telegram, tg_edit, tg_notify_failure, ALL_LANES, _resolve_lane, _resolve_session_names
 
 
 # ---------------------------------------------------------------------------
@@ -24,187 +25,6 @@ from rename import resolve_output_name, format_track_report
 # Daily KV reads: 12 encodes x poll every 5s x 3h = ~25,920 reads
 # Daily KV writes: 0 from main.py. Only from Worker when /p is sent.
 # ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# TELEGRAM AUTH — runs concurrently with encoding.
-# Sets tg_ready when the client is connected and initial message is sent.
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# LANE RESOLUTION — derive A–T (20 lanes) from GITHUB_RUN_NUMBER to match tg_handler.py
-# 20 lanes comfortably supports 15+ simultaneous encodes with no session collisions.
-# ---------------------------------------------------------------------------
-ALL_LANES = [chr(ord("A") + i) for i in range(20)]  # ["A", "B", ..., "T"]
-
-def _resolve_lane(run_number: int) -> str:
-    return ALL_LANES[run_number % 20]
-
-def _resolve_session_names() -> list[str]:
-    """
-    Return an ordered list of session names to try, most-preferred first.
-    Own lane is tried first (enc + tg_dl), then every other lane as cross-lane
-    fallbacks, then the legacy bare session last.
-    With 20 lanes this gives up to 41 sessions before giving up.
-    """
-    run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
-    lane = _resolve_lane(run_number)
-    print(f"Encoder session lane: {lane} (run #{run_number})")
-
-    other_lanes = [l for l in ALL_LANES if l != lane]
-    sessions = []
-    # Own lane — highest priority
-    sessions.append(f"tg_session_dir/enc_session_{lane}")
-    sessions.append(f"tg_session_dir/tg_dl_session_{lane}")
-    # Cross-lane fallbacks (enc first, then tg_dl for each)
-    for other in other_lanes:
-        sessions.append(f"tg_session_dir/enc_session_{other}")
-        sessions.append(f"tg_session_dir/tg_dl_session_{other}")
-    # Legacy bare session as final fallback
-    sessions.append(config.SESSION_NAME)
-    return sessions
-
-
-async def connect_telegram(tg_state: dict, tg_ready: asyncio.Event, label: str):
-    """
-    Connect to Telegram trying each session in priority order.
-    If a session gets a FloodWait we skip to the next one immediately —
-    the flooded session is noted so it won't be retried.
-    Falls back to sleeping out the shortest FloodWait only if every session
-    is flooded.
-    tg_state keys set on success: 'app', 'status'
-    """
-    session_names = _resolve_session_names()
-    flood_waits: dict[str, int] = {}   # session_name → seconds to wait
-
-    app = None
-    for session_name in session_names:
-        try:
-            candidate = Client(
-                session_name,
-                api_id=config.API_ID,
-                api_hash=config.API_HASH,
-                bot_token=config.BOT_TOKEN,
-            )
-            await candidate.start()
-            app = candidate
-            print(f"TG auth OK with session: {session_name}")
-            break
-        except FloodWait as e:
-            flood_waits[session_name] = e.value
-            print(f"FloodWait {e.value}s on session '{session_name}' — trying next session...")
-            continue
-        except Exception as e:
-            print(f"TG auth error on session '{session_name}': {e} — trying next session...")
-            continue
-
-    # All sessions flooded — sleep out the shortest wait then keep retrying
-    # with the same sleep-and-retry loop until auth succeeds (original fallback
-    # behaviour: Telegram tells us exactly how long to wait, so we always obey).
-    if app is None and flood_waits:
-        best_session = min(flood_waits, key=flood_waits.get)
-        wait_secs    = flood_waits[best_session]
-        attempt = 0
-        while True:
-            attempt += 1
-            print(f"All sessions flooded. Sleeping {wait_secs}s for '{best_session}' (attempt {attempt})...")
-            await asyncio.sleep(wait_secs + 5)
-            try:
-                candidate = Client(
-                    best_session,
-                    api_id=config.API_ID,
-                    api_hash=config.API_HASH,
-                    bot_token=config.BOT_TOKEN,
-                )
-                await candidate.start()
-                app = candidate
-                print(f"TG auth OK (post-flood attempt {attempt}) with session: {best_session}")
-                break
-            except FloodWait as e:
-                # Telegram issued a fresh FloodWait — obey it and loop again
-                wait_secs = e.value
-                print(f"Another FloodWait: {wait_secs}s — will keep waiting...")
-                continue
-            except Exception as e:
-                print(f"TG auth failed on post-flood attempt {attempt}: {e}")
-                return
-
-    if app is None:
-        print("TG auth failed: no usable session found.")
-        return
-
-    try:
-        status = await app.send_message(
-            config.CHAT_ID,
-            f"<b>[ SYSTEM ONLINE ] Encoding: {label}</b>",
-            parse_mode=enums.ParseMode.HTML,
-        )
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-        status = await app.send_message(
-            config.CHAT_ID,
-            f"<b>[ SYSTEM ONLINE ] Encoding: {label}</b>",
-            parse_mode=enums.ParseMode.HTML,
-        )
-
-    tg_state["app"] = app
-    tg_state["status"] = status
-    tg_ready.set()
-    print("Telegram connected.")
-
-
-# ---------------------------------------------------------------------------
-# SAFE TG EDIT — no-ops silently if TG not ready yet
-# ---------------------------------------------------------------------------
-async def tg_edit(tg_state: dict, tg_ready: asyncio.Event, text: str, reply_markup=None):
-    if not tg_ready.is_set():
-        return
-    app    = tg_state.get("app")
-    status = tg_state.get("status")
-    if not app or not status:
-        return
-    try:
-        kwargs = dict(parse_mode=enums.ParseMode.HTML)
-        if reply_markup:
-            kwargs["reply_markup"] = reply_markup
-        await app.edit_message_text(config.CHAT_ID, status.id, text, **kwargs)
-    except FloodWait as e:
-        await asyncio.sleep(e.value + 1)
-    except Exception:
-        pass
-
-
-
-# ---------------------------------------------------------------------------
-# FAILURE NOTIFIER — sends failure message + log to TG (best-effort)
-# ---------------------------------------------------------------------------
-async def tg_notify_failure(tg_state: dict, tg_ready: asyncio.Event,
-                            file_name: str, reason: str):
-    """
-    Edit the status message to show the failure UI and, if a log file exists,
-    attach it as a document.  Safe to call even if TG never fully connected.
-    """
-    app    = tg_state.get("app")
-    status = tg_state.get("status")
-    if not app or not status:
-        print(f"[TG-FAIL] TG unavailable — failure reason: {reason}")
-        return
-    try:
-        await app.edit_message_text(
-            config.CHAT_ID, status.id,
-            get_failure_ui(file_name, reason),
-            parse_mode=enums.ParseMode.HTML,
-        )
-    except Exception as e:
-        print(f"[TG-FAIL] Could not edit status message: {e}")
-    if os.path.exists(config.LOG_FILE):
-        try:
-            await app.send_document(
-                config.CHAT_ID, config.LOG_FILE,
-                caption="<b>FULL MISSION LOG</b>",
-                parse_mode=enums.ParseMode.HTML,
-            )
-        except Exception as e:
-            print(f"[TG-FAIL] Could not send log document: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -257,9 +77,9 @@ async def main():
         return
 
     # 3. RENAME — build structured output filename if ANIME_NAME is set.
-    # If ANIME_NAME is blank, attempt to auto-parse it from the source filename
-    # using anitopy as a fallback. Auto-detect is skipped for anibd.app downloads
-    # (filename is already final), but an explicit ANIME_NAME always applies.
+    # If ANIME_NAME is blank, attempt to auto-parse it from the source URL's
+    # filename= query param (or path) using anitopy as a fallback.
+    # Skip entirely for anibd.app downloads — filename is already final.
     anime_name = config.ANIME_NAME.strip() if config.ANIME_NAME else ""
     is_special = False
     _anibd_source = os.path.exists("anibd_source.txt")
@@ -293,14 +113,13 @@ async def main():
             if parsed:
                 anime_name = parsed["anime_name"]
                 is_special = parsed["is_special"]
-                # Rename OFF: bridge's episode/season are meaningless sequential
-                # numbers — always trust what was detected from the actual filename.
-                config.SEASON  = str(parsed["season"])
-                config.EPISODE = str(parsed["episode"])
+                # Only override season/episode if bridge didn't send explicit values
+                if not config.SEASON or not config.SEASON.strip() or config.SEASON == "1":
+                    config.SEASON  = str(parsed["season"])
+                if not config.EPISODE or not config.EPISODE.strip() or config.EPISODE == "1":
+                    config.EPISODE = str(parsed["episode"])
 
-    if anime_name:
-        # Explicit ANIME_NAME (rename ON) or auto-detected name — build structured filename.
-        # _anibd_source only blocked auto-detect above; explicit renames always apply.
+    if anime_name and not _anibd_source:
         rename_height = int(config.USER_RES) if (config.USER_RES and config.USER_RES.strip().isdigit()) else height
         resolved_name, audio_type_label, audio_tracks, sub_tracks = resolve_output_name(
             source               = config.SOURCE,
@@ -315,7 +134,7 @@ async def main():
         config.FILE_NAME = resolved_name
         print(f"[rename] Output → {resolved_name}  |  Audio: {audio_type_label}")
     else:
-        # No rename — probe tracks for report only
+        # No rename requested — probe tracks for report only
         from rename import get_track_info
         audio_tracks, sub_tracks = get_track_info(config.SOURCE)
         audio_type_label = None
@@ -329,9 +148,24 @@ async def main():
     crop_val  = get_crop_params(duration)
 
     # -- VIDEO FILTERS --
-    vf_filters = ["hqdn3d=1.5:1.2:3:3"]
+    # Correct filter order: crop → scale → tonemap (HDR only) → hqdn3d.
+    # Crop removes unwanted pixels first, scale resizes only what's kept,
+    # tonemapping converts HDR10 → SDR before denoise runs on the final pixels.
+    vf_filters = []
     if crop_val: vf_filters.append(f"crop={crop_val}")
-    if res_label: vf_filters.append(f"scale=-1:{res_label}")  # skip when ORIGINAL
+    if res_label: vf_filters.append(f"scale=-2:{res_label}")  # -2 = width divisible by 2
+    if is_hdr:
+        # HDR10 → SDR tonemap: convert to linear light, apply hable tonemap,
+        # then back to bt709 for SDR display. Requires zscale + tonemap + zscale.
+        vf_filters += [
+            "zscale=t=linear:npl=100",
+            "format=gbrpf32le",
+            "zscale=p=bt709",
+            "tonemap=hable:desat=0",
+            "zscale=t=bt709:m=bt709:r=tv",
+            "format=yuv420p10le",
+        ]
+    vf_filters.append("hqdn3d=1.5:1.2:3:3")
     video_filters = ["-vf", ",".join(vf_filters)]
 
     # Display label — show actual source height when no downscale requested
@@ -391,17 +225,6 @@ async def main():
         connect_telegram(tg_state, tg_ready, config.FILE_NAME)
     )
     tg_connect_start = time.time()   # record when we started waiting for TG
-
-    # Build action buttons once — reused on every progress edit during encoding.
-    # Button 1: URL button → opens the GitHub Actions log directly (no callback needed).
-    # Button 2: kill_{run_id} callback → handled by the bridge Worker which cancels the run.
-    _gh_repo = os.getenv("GITHUB_REPOSITORY", "")
-    _run_id  = config.GITHUB_RUN_ID
-    _log_url = f"https://github.com/{_gh_repo}/actions/runs/{_run_id}"
-    encode_buttons = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📋 Open Log",   url=_log_url),
-        InlineKeyboardButton("🛑 Terminate",  callback_data=f"kill_{_run_id}"),
-    ]])
 
     # 5. ENCODING EXECUTION (starts immediately, does not wait for TG)
 
@@ -488,14 +311,9 @@ async def main():
         async for raw_line in process.stdout:
             line = raw_line.decode("utf-8", errors="replace")
             f_log.write(line)
-            if config.CANCELLED:
-                process.terminate()
-                elapsed_so_far = time.time() - start_time
-                await tg_edit(
-                    tg_state, tg_ready,
-                    get_cancelled_ui(config.FILE_NAME, format_time(elapsed_so_far)),
-                )
-                break
+            # Cancel is handled externally: the bridge Worker cancels the GitHub
+            # run via API (kill_{run_id}), which terminates this process directly.
+            # config.CANCELLED is never set — the check below is removed.
 
             if "out_time_ms" in line:
                 try:
@@ -528,7 +346,7 @@ async def main():
                         last_progress_pct = milestone
                         last_update_time  = now
                         # Only sends if TG is already ready; otherwise silently buffered
-                        await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
+                        await tg_edit(tg_state, tg_ready, scifi_ui)
 
                 except Exception:
                     continue
@@ -563,7 +381,7 @@ async def main():
     try:
         # Push the last progress frame in case TG connected after encoding ended
         if last_ui_text:
-            await tg_edit(tg_state, tg_ready, last_ui_text, reply_markup=encode_buttons)
+            await tg_edit(tg_state, tg_ready, last_ui_text)
 
         # 6. ERROR HANDLING
         if process.returncode != 0:
@@ -579,13 +397,20 @@ async def main():
         await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>")
         fixed_file = f"FIXED_{config.FILE_NAME}"
         mkvmerge_title_args = ["--title", config.ENCODER_TITLE] if config.ENCODER_TITLE.strip() else []
-        subprocess.run([
+        mkvmerge_result = subprocess.run([
             "mkvmerge", "-o", fixed_file,
             *mkvmerge_title_args,
             config.FILE_NAME,
             "--no-video", "--no-audio", "--no-subtitles", "--no-attachments", config.SOURCE
-        ])
-        if os.path.exists(fixed_file):
+        ], capture_output=True, text=True)
+        if mkvmerge_result.returncode != 0:
+            # mkvmerge failed (e.g. missing libmatroska) — log and skip remux.
+            # The encoded file is still valid; continue without chapter/attachment merge.
+            print(f"[mkvmerge] WARNING: remux failed (exit {mkvmerge_result.returncode}): "
+                  f"{mkvmerge_result.stderr.strip()[-200:]}")
+            if os.path.exists(fixed_file):
+                os.remove(fixed_file)  # partial output
+        elif os.path.exists(fixed_file):
             os.remove(config.FILE_NAME)
             os.rename(fixed_file, config.FILE_NAME)
 
@@ -630,6 +455,12 @@ async def main():
                 "<b>[ SIZE OVERFLOW ]</b> File too large for Telegram. Cloud link below.",
                 reply_markup=buttons,
             )
+            # Cleanup even on overflow — runner disk is finite
+            for _f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT,
+                       "anibd_source.txt", *ocr_srt_files]:
+                if os.path.exists(_f):
+                    try: os.remove(_f)
+                    except: pass
             return
 
         thumb = config.SCREENSHOT if os.path.exists(config.SCREENSHOT) else None

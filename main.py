@@ -9,7 +9,7 @@ from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
-from media import get_video_info, get_crop_params, select_params, async_generate_thumbnail, get_vmaf, upload_to_cloud
+from media import get_video_info, get_crop_params, async_generate_thumbnail, get_vmaf, upload_to_cloud
 from rename import lang_code_to_name
 from ui import get_encode_ui, format_time, upload_progress, get_cancelled_ui, get_vmaf_ui
 from rename import resolve_output_name, format_track_report
@@ -140,9 +140,10 @@ async def main():
         audio_type_label = None
 
     # 4. PARAMETER CONFIGURATION
-    def_crf, def_preset = select_params(height)
-    final_crf    = config.USER_CRF if (config.USER_CRF and config.USER_CRF.strip()) else def_crf
-    final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else def_preset
+    # CRF and preset come directly from bridge inputs — no auto-selection.
+    # Bridge always sends explicit values (defaults: CRF 50, Preset 8).
+    final_crf    = config.USER_CRF    if (config.USER_CRF    and config.USER_CRF.strip())    else "50"
+    final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else "8"
 
     res_label = config.USER_RES if (config.USER_RES and config.USER_RES.strip()) else None
     crop_val  = get_crop_params(duration)

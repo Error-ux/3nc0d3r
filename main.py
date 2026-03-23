@@ -184,60 +184,28 @@ async def main():
         grain_val = max(0, min(50, int(config.USER_GRAIN or 0)))
     except (ValueError, TypeError):
         grain_val = 0
-    # complex-hvs: only recommended for Preset 6 and slower — amplifies psy-rd
-    # massively via SSD metric. At Preset 8 (testing) it's skipped.
-    _use_complex_hvs = int(final_preset) <= 6
-    _complex_hvs_param = "complex-hvs=1:" if _use_complex_hvs else ""
-
+    # ── 5fish/SVT-AV1-PSY params ────────────────────────────────────────────
+    # 5fish is anime-optimised. Only 4 params need tuning:
+    # preset, crf (set by user), lineart-psy-bias, texture-psy-bias.
+    #
+    # lineart-psy-bias: controls line art retention
+    #   3 = good for most anime (clean lines)
+    #   4 = more focus on weak lineart
+    #   5+ = aggressive weak lineart — may cause issues on texture-heavy sources
+    #
+    # texture-psy-bias: controls texture/grain retention
+    #   2 = clean anime with little texture
+    #   3 = occasional texture (default, good general setting)
+    #   4 = detailed texture sources
+    #   5+ = very texture-heavy or grainy sources
+    #
+    # For mini encodes (your use case: 30-60MB / 24min), preset 2-4, crf 28-35.
+    # film-grain: pass through user setting for synthetic grain synthesis.
     svtav1_tune = (
-        # ── Core VQ tune ─────────────────────────────────────────────────
-        f"tune=0:"                          # VQ tune — psy-optimised RD decisions
-        f"film-grain={grain_val}:"          # synthetic grain synthesis
-        f"enable-overlays=1:"              # improves static/slow scenes
-        f"sharpness=1:"                    # loopfilter sharpness + RD bias
-
-        # ── PSYEX Psychovisual RD ─────────────────────────────────────────
-        f"psy-rd=2.0:"                     # psy-RD: preserves visual energy of HF detail
-        f"sharp-tx=1:"                     # disables conv. TX opts — supercharges psy-rd
-        f"{_complex_hvs_param}"            # SSD metric — massively amplifies psy-rd (P6 and slower only)
-        f"spy-rd=1:"                       # sharpness-biased psy pathway (detail/lines)
-
-        # ── Anime-optimised noise/filter handling ─────────────────────────
-        # noise-adaptive-filtering=4: CDEF always on (cleans lines) +
-        # restoration disabled when grain detected (preserves texture).
-        # Best balance for anime: clean lines + no over-smoothing.
-        f"noise-adaptive-filtering=4:"
-        f"noise-norm-strength=3:"          # boost AC coefficients in flat/fine-texture regions
-
-        # ── Variance-based AQ (psy bit redistribution) ───────────────────
-        f"aq-mode=2:"                      # delta-q AQ — per-block variance redistribution
-        f"variance-boost-strength=3:"      # aggressive: flat areas starved, detail boosted
-        f"variance-octile=6:"              # top 25% complex blocks get the boost
-
-        # ── Quantization matrices ─────────────────────────────────────────
-        f"enable-qm=1:qm-min=4:qm-max=8:"    # luma QM — PSYEX recommended min=4
-        f"chroma-qm-min=10:chroma-qm-max=15:" # chroma QM — PSYEX default, prevents bad chroma QMs
-
-        # ── High bit-depth mode decisions ────────────────────────────────
-        f"hbd-mds=1:"                      # force 10-bit mode decisions — better efficiency
-
-        # ── Temporal filtering (reduce blur) ─────────────────────────────
-        f"enable-tf=2:"                    # adaptive TF — auto per motion/detail
-        f"tf-strength=1:"                  # 4x less temporal blur than mainline
-        f"kf-tf-strength=1:"              # reduce KF artifacts from alt-ref TF
-
-        # ── Dark scene & temporal consistency ────────────────────────────
-        f"luminance-qp-bias=50:"           # better quality in dark scenes
-        f"qp-scale-compress-strength=1:"   # temporal consistency for grain/motion
-
-        # ── Loop filter ───────────────────────────────────────────────────
-        f"enable-dlf=2:"                   # accurate deblock — less blocking (P4+ only)
-
-        # ── Film grain consistency ────────────────────────────────────────
-        f"adaptive-film-grain=1:"          # adaptive grain blocksize per resolution
-
-        # ── Threading & tile layout (GitHub Actions runners) ─────────────
-        f"pin=0:lp=8:tile-columns=2:tile-rows=1:la-depth=60"
+        f"film-grain={grain_val}:"
+        f"lineart-psy-bias=3:"          # clean anime lines — good for most BD sources
+        f"texture-psy-bias=3:"          # balanced texture retention
+        f"pin=0:lp=8:tile-columns=2:tile-rows=1"  # threading for GitHub Actions
     )
 
     # UI Labels

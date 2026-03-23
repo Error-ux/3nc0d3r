@@ -165,7 +165,7 @@ async def main():
             "zscale=t=bt709:m=bt709:r=tv",
             "format=yuv420p10le",
         ]
-    vf_filters.append("hqdn3d=2.5:2:4.5:4.5")  # stronger denoise — pairs with grain synthesis to cut size 15–30%
+    vf_filters.append("hqdn3d=1.5:1.2:3:3")
     video_filters = ["-vf", ",".join(vf_filters)]
 
     # Display label — show actual source height when no downscale requested

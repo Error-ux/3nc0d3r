@@ -196,7 +196,18 @@ jobs:
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
           echo "📦 Installing build dependencies..."
-          sudo apt-get install -y             cmake nasm yasm pkg-config             libvmaf-dev libopus-dev             libssl-dev zlib1g-dev
+          sudo apt-get install -y             cmake nasm yasm pkg-config meson ninja-build             libopus-dev libssl-dev zlib1g-dev
+
+          echo "🔨 Building libvmaf from source..."
+          git clone https://github.com/Netflix/vmaf --depth=1
+          cd vmaf/libvmaf
+          meson setup build             --buildtype=release             --default-library=shared             -Denable_tests=false             -Denable_docs=false             --prefix=/usr/local
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
+          cd ../..
+          rm -rf vmaf
+          echo "✅ libvmaf installed"
 
           echo "🔨 Building SVT-AV1-PSYEX..."
           git clone https://github.com/BlueSwordM/svt-av1-psyex --depth=1

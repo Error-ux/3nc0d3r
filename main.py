@@ -184,7 +184,12 @@ async def main():
         grain_val = max(0, min(50, int(config.USER_GRAIN or 0)))
     except (ValueError, TypeError):
         grain_val = 0
-    svtav1_tune = f"tune=0:film-grain={grain_val}:enable-overlays=1:aq-mode=1:pin=0:lp=8:tile-columns=2:tile-rows=1:la-depth=60"
+    svtav1_tune = (
+        f"tune=0:film-grain={grain_val}:enable-overlays=1:"
+        f"aq-mode=2:variance-boost-strength=2:variance-octile=6:"
+        f"enable-qm=1:qm-min=0:qm-max=8:sharpness=1:"
+        f"pin=0:lp=8:tile-columns=2:tile-rows=1:la-depth=60"
+    )
 
     # UI Labels
     hdr_label      = "HDR10" if is_hdr else "SDR"

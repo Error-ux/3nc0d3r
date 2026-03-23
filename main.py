@@ -293,11 +293,10 @@ async def main():
             if parsed:
                 anime_name = parsed["anime_name"]
                 is_special = parsed["is_special"]
-                # Only override season/episode if bridge didn't send explicit values
-                if not config.SEASON or not config.SEASON.strip() or config.SEASON == "1":
-                    config.SEASON  = str(parsed["season"])
-                if not config.EPISODE or not config.EPISODE.strip() or config.EPISODE == "1":
-                    config.EPISODE = str(parsed["episode"])
+                # Rename OFF: bridge's episode/season are meaningless sequential
+                # numbers — always trust what was detected from the actual filename.
+                config.SEASON  = str(parsed["season"])
+                config.EPISODE = str(parsed["episode"])
 
     if anime_name:
         # Explicit ANIME_NAME (rename ON) or auto-detected name — build structured filename.

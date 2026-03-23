@@ -185,9 +185,39 @@ async def main():
     except (ValueError, TypeError):
         grain_val = 0
     svtav1_tune = (
-        f"tune=0:film-grain={grain_val}:enable-overlays=1:"
-        f"aq-mode=2:variance-boost-strength=2:variance-octile=6:"
-        f"enable-qm=1:qm-min=0:qm-max=8:sharpness=1:"
+        # ── Core quality ─────────────────────────────────────────────────
+        f"tune=0:"                          # VQ tune — psy-optimised RD decisions
+        f"film-grain={grain_val}:"          # synthetic grain synthesis
+        f"enable-overlays=1:"              # improves static/slow scenes
+        f"sharpness=1:"                    # loopfilter sharpness bias
+
+        # ── Variance-based AQ (psy bit redistribution) ───────────────────
+        f"aq-mode=2:"                      # delta-q AQ — per-block variance redistribution
+        f"variance-boost-strength=3:"      # aggressive: flat areas starved, detail boosted
+        f"variance-octile=6:"              # top 25% complex blocks get the boost
+
+        # ── Quantization matrices (psy sharpness) ────────────────────────
+        f"enable-qm=1:qm-min=0:qm-max=8:"  # luma QM — psy edge/detail sharpness
+        f"chroma-qm-min=8:chroma-qm-max=15:"  # chroma QM — prevent chroma smearing
+
+        # ── Psychovisual rate distortion ──────────────────────────────────
+        f"ac-bias=1.5:"                    # preserve high-freq detail energy (psy-RD)
+
+        # ── Temporal filtering (reduce blur) ─────────────────────────────
+        f"enable-tf=2:"                    # adaptive TF — auto-adjusts for motion/detail
+        f"tf-strength=1:"                  # 4x less temporal blur than mainline default
+
+        # ── Dark scene & consistency improvements ────────────────────────
+        f"luminance-qp-bias=50:"           # better quality in dark scenes
+        f"qp-scale-compress-strength=1:"   # temporal consistency for grain/fast motion
+
+        # ── Loop filter & blocking ────────────────────────────────────────
+        f"enable-dlf=2:"                   # stronger loop filter, less blocking
+
+        # ── Film grain consistency ────────────────────────────────────────
+        f"adaptive-film-grain=1:"          # varies grain blocksize per resolution
+
+        # ── Threading & tile layout (GitHub Actions runners) ─────────────
         f"pin=0:lp=8:tile-columns=2:tile-rows=1:la-depth=60"
     )
 

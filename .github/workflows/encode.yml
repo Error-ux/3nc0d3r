@@ -100,23 +100,23 @@ jobs:
           key: yt-dlp-standalone-${{ runner.os }}-${{ hashFiles('.github/workflows/encode.yml') }}
 
       # ─────────────────────────────────────────────────────────────────────
-      # CACHE: FFmpeg built with SVT-AV1-PSYEX
-      # Cache key includes PSYEX commit SHA — rebuilds automatically when
-      # PSYEX updates. First build ~20min, then free forever from cache.
+      # CACHE: FFmpeg built with 5fish/SVT-AV1-PSY
+      # Cache key includes 5fish commit SHA — rebuilds automatically when
+      # 5fish updates. First build ~20min, then free forever from cache.
       # ─────────────────────────────────────────────────────────────────────
-      - name: 🔍 Get PSYEX Commit SHA
-        id: psyex-sha
+      - name: 🔍 Get 5fish Commit SHA
+        id: fivefish-sha
         run: |
           SHA=$(curl -s https://api.github.com/repos/5fish/svt-av1-psy/commits/main             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}"             | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'][:8])")
           echo "sha=$SHA" >> $GITHUB_OUTPUT
-          echo "PSYEX SHA: $SHA"
+          echo "5fish SHA: $SHA"
 
-      - name: 📦 Cache FFmpeg+PSYEX Binary
+      - name: 📦 Cache FFmpeg+5fish Binary
         id: ffmpeg-cache
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/ff*
-          key: ffmpeg-5fish-v3-${{ steps.psyex-sha.outputs.sha }}-${{ runner.os }}
+          key: ffmpeg-5fish-v3-${{ steps.fivefish-sha.outputs.sha }}-${{ runner.os }}
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE: apt packages (aria2, mkvtoolnix, curl)
@@ -188,11 +188,11 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       # ─────────────────────────────────────────────────────────────────────
-      # BUILD: SVT-AV1-PSYEX + FFmpeg (skip if cached)
-      # Build PSYEX as a shared library, then build FFmpeg linking against it.
-      # Produces ffmpeg/ffprobe with full PSYEX psy params available.
+      # BUILD: 5fish/SVT-AV1-PSY + FFmpeg (skip if cached)
+      # Build 5fish as a shared library, then build FFmpeg linking against it.
+      # Produces ffmpeg/ffprobe with full 5fish psy params available.
       # ─────────────────────────────────────────────────────────────────────
-      - name: 🔨 Build SVT-AV1-PSYEX + FFmpeg
+      - name: 🔨 Build 5fish/SVT-AV1-PSY + FFmpeg
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
           echo "📦 Installing build dependencies..."

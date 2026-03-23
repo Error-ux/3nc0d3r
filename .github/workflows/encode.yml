@@ -115,8 +115,13 @@ jobs:
         id: ffmpeg-cache
         uses: actions/cache@v4
         with:
-          path: /usr/local/bin/ff*
-          key: ffmpeg-5fish-v3-${{ steps.fivefish-sha.outputs.sha }}-${{ runner.os }}
+          path: |
+            /usr/local/bin/ff*
+            /usr/local/lib/libvmaf*
+            /usr/local/lib/libSvtAv1Enc*
+            /usr/local/lib/pkgconfig/SvtAv1Enc*
+            /usr/local/lib/pkgconfig/libvmaf*
+          key: ffmpeg-5fish-v4-${{ steps.fivefish-sha.outputs.sha }}-${{ runner.os }}
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE: apt packages (aria2, mkvtoolnix, curl)

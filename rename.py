@@ -183,6 +183,14 @@ def parse_from_filename(raw_filename: str) -> dict | None:
       - URL-decoded CDN:    Imouto Sae Ireba Ii. - 12.mkv
       - Greek suffixes:     Steins;Gate 0 - 23β.mkv  (β kept intact)
     """
+    # Pre-detect [SXX-EXX] / [SXX-SPXX] prefix — our own encoder output format.
+    # anitopy treats "[S01-E03]" as a release group and strips it, losing the
+    # episode. Capture season/episode here so we can override anitopy below.
+    _pre_m = re.match(r'^\[S(\d{1,2})[-–](SP?(\d{1,3})|E(\d{1,3}))\]\s*', raw_filename, re.IGNORECASE)
+    _pre_season  = int(_pre_m.group(1))                       if _pre_m else None
+    _pre_episode = int(_pre_m.group(3) or _pre_m.group(4))   if _pre_m else None
+    _pre_special = _pre_m.group(2).upper().startswith("SP")   if _pre_m else False
+
     try:
         import anitopy
         p = anitopy.parse(raw_filename)
@@ -252,6 +260,11 @@ def parse_from_filename(raw_filename: str) -> dict | None:
             if s_m and int(s_m.group(1)) != season:
                 is_special = True
                 episode    = int(s_m.group(1))
+
+    # Override with pre-detected [SXX-EXX] values — anitopy missed them.
+    if _pre_season  is not None: season     = _pre_season
+    if _pre_episode is not None: episode    = _pre_episode
+    if _pre_m:                   is_special = _pre_special
 
     print(
         f"[rename] anitopy → {anime_name!r}  "

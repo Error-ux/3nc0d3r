@@ -100,16 +100,14 @@ jobs:
           key: yt-dlp-standalone-${{ runner.os }}-${{ hashFiles('.github/workflows/encode.yml') }}
 
       # ─────────────────────────────────────────────────────────────────────
-      # CACHE: FFmpeg built with 5fish/SVT-AV1-PSY
-      # Fixed cache key — stable across runs, never rebuilds unless you
-      # bump the version suffix (e.g. v4 → v5) to force a fresh build.
+      # CACHE: FFmpeg binary
       # ─────────────────────────────────────────────────────────────────────
-      - name: 📦 Cache FFmpeg+5fish Binary
+      - name: 📦 Cache FFmpeg Binary
         id: ffmpeg-cache
         uses: actions/cache@v4
         with:
-          path: /opt/ffmpeg-5fish
-          key: ffmpeg-5fish-v7-${{ runner.os }}
+          path: /usr/local/bin/ff*
+          key: ffmpeg-master-linux64-gpl-${{ runner.os }}
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE: apt packages (aria2, mkvtoolnix, curl)
@@ -181,65 +179,15 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       # ─────────────────────────────────────────────────────────────────────
-      # BUILD: 5fish/SVT-AV1-PSY + FFmpeg (skip if cached)
-      # Build 5fish as a shared library, then build FFmpeg linking against it.
-      # Produces ffmpeg/ffprobe with full 5fish psy params available.
+      # INSTALL: FFmpeg (skip if cached)
       # ─────────────────────────────────────────────────────────────────────
-      - name: 🔨 Build 5fish/SVT-AV1-PSY + FFmpeg
+      - name: ⬇️ Download FFmpeg (if not cached)
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
-          # Set PKG_CONFIG_PATH once for the entire build step
-          export PKG_CONFIG_PATH="/opt/ffmpeg-5fish/lib/pkgconfig:$PKG_CONFIG_PATH"
-
-          echo "📦 Installing build dependencies..."
-          sudo apt-get install -y             cmake nasm yasm pkg-config meson ninja-build             clang lld             libopus-dev libssl-dev zlib1g-dev
-
-          echo "🔨 Building libvmaf from source..."
-          git clone https://github.com/Netflix/vmaf --depth=1
-          cd vmaf/libvmaf
-          meson setup build             --buildtype=release             --default-library=shared             -Denable_tests=false             -Denable_docs=false             --prefix=/opt/ffmpeg-5fish
-          ninja -C build
-          sudo DESTDIR="" ninja -C build install
-          echo "/opt/ffmpeg-5fish/lib" | sudo tee /etc/ld.so.conf.d/ffmpeg-5fish.conf
-          sudo ldconfig
-          cd ../..
-          rm -rf vmaf
-          echo "📋 libvmaf pkgconfig files:"
-          ls /opt/ffmpeg-5fish/lib/pkgconfig/ 2>/dev/null || echo "  (none found)"
-          echo "✅ libvmaf installed"
-
-          echo "🔨 Building 5fish/SVT-AV1-PSY..."
-          git clone https://github.com/5fish/svt-av1-psy --depth=1
-          cmake -B svt-av1-psy/Build             -S svt-av1-psy             -DCMAKE_BUILD_TYPE=Release             -DBUILD_SHARED_LIBS=ON             -DCMAKE_INSTALL_PREFIX=/opt/ffmpeg-5fish             -DCMAKE_C_COMPILER=clang             -DCMAKE_CXX_COMPILER=clang++             -DSVT_AV1_LTO=ON
-          cmake --build svt-av1-psy/Build --parallel $(nproc)
-          sudo cmake --install svt-av1-psy/Build
-          echo "/opt/ffmpeg-5fish/lib" | sudo tee /etc/ld.so.conf.d/ffmpeg-5fish.conf
-          sudo ldconfig
-          # Verify pkg-config can find it
-          pkg-config --modversion SvtAv1Enc && echo "✅ 5fish/SVT-AV1-PSY installed" || echo "⚠️ pkg-config not found, checking manually..."
-          ls /opt/ffmpeg-5fish/lib/pkgconfig/SvtAv1Enc* 2>/dev/null || true
-
-          echo "🔨 Building FFmpeg with 5fish/SVT-AV1-PSY..."
-          git clone https://github.com/FFmpeg/FFmpeg --depth=1 --branch master ffmpeg-src
-          cd ffmpeg-src
-          # pkg-config path so FFmpeg finds 5fish's SvtAv1Enc
-          PKG_CONFIG_PATH="/opt/ffmpeg-5fish/lib/pkgconfig:/opt/ffmpeg-5fish/lib64/pkgconfig" ./configure             --prefix=/opt/ffmpeg-5fish             --enable-gpl             --enable-version3             --enable-nonfree             --enable-libsvtav1             --enable-libopus             --enable-libvmaf             --disable-debug             --disable-doc             --disable-ffplay             --enable-optimizations             --cc=clang --cxx=clang++ --ld=clang             --extra-ldflags="-fuse-ld=lld"
-          make -j$(nproc)
-          sudo make install
-          echo "/opt/ffmpeg-5fish/lib" | sudo tee /etc/ld.so.conf.d/ffmpeg-5fish.conf
-          sudo ldconfig
-          cd ..
-          rm -rf ffmpeg-src svt-av1-psy
-          echo "✅ FFmpeg with 5fish/SVT-AV1-PSY ready — $(ffmpeg -version | head -1)"
-
-      # Ensure /opt/ffmpeg-5fish/lib is registered for shared libs (libvmaf, libSvtAv1Enc)
-      # Required both after a fresh build AND after cache restore.
-      - name: 🔧 Register 5fish libs + symlink binaries
-        run: |
-          echo "/opt/ffmpeg-5fish/lib" | sudo tee /etc/ld.so.conf.d/ffmpeg-5fish.conf
-          sudo ldconfig
-          sudo ln -sf /opt/ffmpeg-5fish/bin/ffmpeg  /usr/local/bin/ffmpeg
-          sudo ln -sf /opt/ffmpeg-5fish/bin/ffprobe /usr/local/bin/ffprobe
+          wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
+          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
+          rm -rf ffmpeg-master-latest-linux64-gpl*
 
       - name: 📁 Setup Session Dir
         run: mkdir -p tg_session_dir

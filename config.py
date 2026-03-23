@@ -45,6 +45,17 @@ CONTENT_TYPE = os.getenv("CONTENT_TYPE", "Anime")  # Anime | Donghua | Hentai | 
 SUB_TRACKS   = os.getenv("SUB_TRACKS",   "")       # e.g. "English, Arabic"
 AUDIO_TRACKS = os.getenv("AUDIO_TRACKS", "")       # e.g. "Japanese, English (Dub)"
 
+# ---------- MINI ENCODE ----------
+# Set MINI_ENCODE=true to activate the compact AV1+Opus pipeline.
+# The encoder will:
+#   • Run a VMAF-guided CRF search to hit TARGET_VMAF within MAX_SIZE_MB.
+#   • Detect OP/ED segments and mark them as named MKV chapters.
+#   • Use a speed-optimised SVT-AV1 param set (reduced la-depth).
+# Resolution is NEVER changed — set USER_RES explicitly if needed.
+MINI_ENCODE  = os.getenv("MINI_ENCODE",  "false").lower() == "true"
+TARGET_VMAF  = float(os.getenv("TARGET_VMAF",  "93"))   # desired VMAF floor
+MAX_SIZE_MB  = float(os.getenv("MAX_SIZE_MB",  "60"))   # soft size ceiling (MB)
+
 # ---------- DEMO / PARTIAL ENCODING ----------
 # Set DEMO_DURATION to a non-empty value (e.g. "120") to encode only that
 # many seconds of the source.  DEMO_START is the seek position (default "0").

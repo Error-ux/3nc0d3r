@@ -175,13 +175,7 @@ async def get_vmaf(output_file, crop_val, width, height, duration, fps, kv_write
         return "N/A", "N/A"
 
 
-def select_params(height):
-    # Fallback params used only when the bridge sends no CRF/preset.
-    # Tuned to match typical AV1 quality targets per resolution.
-    if height >= 2000: return 35, 8   # 4K
-    elif height >= 1000: return 48, 8  # 1080p
-    elif height >= 700:  return 50, 8  # 720p
-    return 52, 6                       # 480p and below
+
 
 
 

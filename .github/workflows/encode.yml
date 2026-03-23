@@ -116,7 +116,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/ff*
-          key: ffmpeg-psyex-${{ steps.psyex-sha.outputs.sha }}-${{ runner.os }}
+          key: ffmpeg-psyex-v2-${{ steps.psyex-sha.outputs.sha }}-${{ runner.os }}
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE: apt packages (aria2, mkvtoolnix, curl)

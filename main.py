@@ -9,7 +9,7 @@ from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
-from media import get_video_info, get_crop_params, async_generate_thumbnail, get_vmaf, upload_to_cloud, find_optimal_crf
+from media import get_video_info, get_crop_params, async_generate_thumbnail, get_vmaf, upload_to_cloud
 from rename import lang_code_to_name
 from ui import get_encode_ui, format_time, upload_progress, get_cancelled_ui, get_vmaf_ui
 from rename import resolve_output_name, format_track_report
@@ -141,8 +141,8 @@ async def main():
     # 4. PARAMETER CONFIGURATION
     # CRF and preset come directly from bridge inputs — no auto-selection.
     # Bridge always sends explicit values (defaults: CRF 50, Preset 8).
-    final_crf    = config.USER_CRF    if (config.USER_CRF    and config.USER_CRF.strip())    else "50"
-    final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else "8"
+    final_crf    = config.USER_CRF    if (config.USER_CRF    and config.USER_CRF.strip())    else "42"
+    final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else "5"
 
     res_label = config.USER_RES if (config.USER_RES and config.USER_RES.strip()) else None
     crop_val  = get_crop_params(duration)
@@ -165,7 +165,7 @@ async def main():
             "zscale=t=bt709:m=bt709:r=tv",
             "format=yuv420p10le",
         ]
-    vf_filters.append("hqdn3d=1.5:1.2:3:3")
+    vf_filters.append("hqdn3d=2.5:2:4.5:4.5")  # stronger denoise — pairs with grain synthesis to cut size 15–30%
     video_filters = ["-vf", ",".join(vf_filters)]
 
     # Display label — show actual source height when no downscale requested
@@ -173,7 +173,7 @@ async def main():
     res_label = res_label or f"Original({detect_quality(height)})"
 
     # -- AUDIO CONFIGURATION --
-    final_audio_bitrate = config.AUDIO_BITRATE if (config.AUDIO_BITRATE and config.AUDIO_BITRATE.strip()) else "32k"
+    final_audio_bitrate = config.AUDIO_BITRATE if (config.AUDIO_BITRATE and config.AUDIO_BITRATE.strip()) else "48k"
     audio_cmd           = ["-af", "aformat=channel_layouts=stereo", "-c:a", "libopus", "-b:a", final_audio_bitrate, "-vbr", "on"]
 
     # -- SVT-AV1 PARAMETERS --
@@ -188,20 +188,9 @@ async def main():
         f"tune=0:film-grain={grain_val}:enable-overlays=1:"
         f"aq-mode=2:variance-boost-strength=2:variance-octile=6:"
         f"enable-qm=1:qm-min=0:qm-max=8:sharpness=1:"
-        f"pin=0:lp=8:tile-columns=2:tile-rows=1:la-depth=60"
+        f"enable-tf=1:scd=1:"                              # temporal filtering + scene-change detection
+        f"pin=0:lp=8:tile-columns=2:tile-rows=1:la-depth=120"  # extended lookahead for better bit distribution
     )
-
-    # -- MINI ENCODE PARAM OVERRIDES --
-    # When MINI_ENCODE=true we use a speed-optimised SVT-AV1 param set
-    # (reduced la-depth = faster) and let VMAF-guided CRF search find the
-    # optimal CRF for the target quality / size budget.
-    if config.MINI_ENCODE:
-        svtav1_tune = (
-            f"tune=0:film-grain={grain_val}:enable-overlays=1:"
-            f"aq-mode=2:variance-boost-strength=2:variance-octile=6:"
-            f"enable-qm=1:qm-min=0:qm-max=8:sharpness=1:"
-            f"pin=0:lp=8:tile-columns=2:tile-rows=1:la-depth=32"
-        )
 
     # UI Labels
     hdr_label      = "HDR10" if is_hdr else "SDR"
@@ -232,37 +221,6 @@ async def main():
         print(f"[DEMO MODE] Encoding {demo_duration_sec:.0f}s from {demo_start_sec:.0f}s")
 
     demo_label = f" | ⚡ DEMO {demo_duration}s" if demo_mode else ""
-
-    # -------------------------------------------------------------------------
-    # 4b. MINI ENCODE — VMAF-GUIDED CRF
-    # Runs before TG auth so encoding starts with the optimal CRF already set.
-    # -------------------------------------------------------------------------
-    if config.MINI_ENCODE:
-        print("[mini] Mini-encode mode active.")
-
-        # --- VMAF-guided CRF search ---
-        # Only run if the user did NOT supply an explicit CRF, so manual
-        # overrides are always honoured.
-        if not (config.USER_CRF and config.USER_CRF.strip()):
-            print(
-                f"[mini] Searching for optimal CRF "
-                f"(VMAF ≥ {config.TARGET_VMAF}, cap {config.MAX_SIZE_MB}MB) …"
-            )
-            final_crf = await find_optimal_crf(
-                source        = config.SOURCE,
-                duration      = duration,
-                target_vmaf   = config.TARGET_VMAF,
-                max_size_mb   = config.MAX_SIZE_MB,
-                preset        = final_preset,
-                svtav1_params = svtav1_tune,
-                vf_filters    = vf_filters,
-                audio_cmd     = audio_cmd,
-            )
-        else:
-            print(f"[mini] USER_CRF={final_crf} set — skipping CRF search.")
-
-        # Append mini marker to the demo/mode label shown in the encode UI
-        demo_label = demo_label + " | 🎯 MINI"
 
     # 4. LAUNCH TG AUTH AS A BACKGROUND TASK — encoding starts immediately.
     # If FloodWait fires, connect_telegram sleeps it out on its own while
@@ -456,7 +414,6 @@ async def main():
         await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>")
         fixed_file = f"FIXED_{config.FILE_NAME}"
         mkvmerge_title_args = ["--title", config.ENCODER_TITLE] if config.ENCODER_TITLE.strip() else []
-
         mkvmerge_result = subprocess.run([
             "mkvmerge", "-o", fixed_file,
             *mkvmerge_title_args,
@@ -464,10 +421,12 @@ async def main():
             "--no-video", "--no-audio", "--no-subtitles", "--no-attachments", config.SOURCE
         ], capture_output=True, text=True)
         if mkvmerge_result.returncode != 0:
+            # mkvmerge failed (e.g. missing libmatroska) — log and skip remux.
+            # The encoded file is still valid; continue without chapter/attachment merge.
             print(f"[mkvmerge] WARNING: remux failed (exit {mkvmerge_result.returncode}): "
                   f"{mkvmerge_result.stderr.strip()[-200:]}")
             if os.path.exists(fixed_file):
-                os.remove(fixed_file)
+                os.remove(fixed_file)  # partial output
         elif os.path.exists(fixed_file):
             os.remove(config.FILE_NAME)
             os.rename(fixed_file, config.FILE_NAME)
@@ -543,16 +502,6 @@ async def main():
             f"⚡ <b>DEMO MODE:</b> <code>{demo_duration}s from {demo_start}</code>\n"
             if demo_mode else ""
         )
-
-        # -- Mini encode report lines --
-        mini_report_line = ""
-        if config.MINI_ENCODE:
-            mini_report_line = (
-                f"🎯 <b>MINI:</b> CRF <code>{final_crf}</code> | "
-                f"Target VMAF <code>{config.TARGET_VMAF}</code> | "
-                f"Cap <code>{config.MAX_SIZE_MB}MB</code>\n"
-            )
-
         report = (
             f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
             f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
@@ -566,7 +515,6 @@ async def main():
             f"└ Audio: {audio_mode_line}\n"
             f"{content_line}"
             f"{demo_report_line}"
-            f"{mini_report_line}"
             f"\n{track_report}"
             f"{user_track_notes}"
         )

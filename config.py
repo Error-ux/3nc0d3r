@@ -17,9 +17,9 @@ SESSION_NAME = os.getenv("SESSION_NAME", "enc_session")
 USER_RES = os.getenv("USER_RES")
 USER_CRF = os.getenv("USER_CRF")
 USER_PRESET = os.getenv("USER_PRESET")
-USER_GRAIN = os.getenv("USER_GRAIN", "0")
+USER_GRAIN = os.getenv("USER_GRAIN", "10")
 AUDIO_MODE = os.getenv("AUDIO_MODE", "opus")
-AUDIO_BITRATE = os.getenv("AUDIO_BITRATE", "32k")
+AUDIO_BITRATE = os.getenv("AUDIO_BITRATE", "48k")
 RUN_VMAF      = os.getenv("RUN_VMAF",      "true").lower() == "true"
 RUN_UPLOAD    = os.getenv("RUN_UPLOAD",    "true").lower() == "true"
 
@@ -44,17 +44,6 @@ AUDIO_TYPE   = os.getenv("AUDIO_TYPE",    "Auto")   # Sub | Dual | Tri | Multi |
 CONTENT_TYPE = os.getenv("CONTENT_TYPE", "Anime")  # Anime | Donghua | Hentai | HMV | AMV | custom
 SUB_TRACKS   = os.getenv("SUB_TRACKS",   "")       # e.g. "English, Arabic"
 AUDIO_TRACKS = os.getenv("AUDIO_TRACKS", "")       # e.g. "Japanese, English (Dub)"
-
-# ---------- MINI ENCODE ----------
-# Set MINI_ENCODE=true to activate the compact AV1+Opus pipeline.
-# The encoder will:
-#   • Run a VMAF-guided CRF search to hit TARGET_VMAF within MAX_SIZE_MB.
-#   • Detect OP/ED segments and mark them as named MKV chapters.
-#   • Use a speed-optimised SVT-AV1 param set (reduced la-depth).
-# Resolution is NEVER changed — set USER_RES explicitly if needed.
-MINI_ENCODE  = os.getenv("MINI_ENCODE",  "false").lower() == "true"
-TARGET_VMAF  = float(os.getenv("TARGET_VMAF",  "93"))   # desired VMAF floor
-MAX_SIZE_MB  = float(os.getenv("MAX_SIZE_MB",  "60"))   # soft size ceiling (MB)
 
 # ---------- DEMO / PARTIAL ENCODING ----------
 # Set DEMO_DURATION to a non-empty value (e.g. "120") to encode only that

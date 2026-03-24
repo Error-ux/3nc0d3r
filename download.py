@@ -36,6 +36,8 @@ CDN_REFERER_MAP = {
     "uwucdn.top":          "https://kwik.cx/",
     "owocdn.top":          "https://kwik.cx/",
     "kwik.cx":             "https://kwik.cx/",
+    "vdownload.hembed.com": "https://hanime1.me/",
+    "hembed.com":           "https://hanime1.me/",
 }
 
 # Platforms routed through yt-dlp regardless of extension

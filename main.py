@@ -365,17 +365,22 @@ async def main():
 
         av1an_cmd = [
             "docker", "run", "--rm", "--privileged",
-            "-t",                                    # allocate TTY — forces line-buffered output from av1an
+            # No -t (TTY): combining PTY with asyncio PIPE causes deadlocks.
+            # Buffering is handled by stdbuf below.
             "-v", f"{cwd}:/videos",
             "--user", f"{os.getuid()}:{os.getgid()}",
+            "--entrypoint", "stdbuf",            # wrap av1an in stdbuf to force line-buffered output
             "masterofzen/av1an:master",
+            "-oL",                               # stdbuf: stdout line-buffered
+            "-eL",                               # stdbuf: stderr line-buffered
+            "av1an",                             # actual binary inside the container
             "-i", src_in_container,
             "--encoder", "svt-av1",
             "--workers", str(cpu_count),
             "--split-method", "av-scenechange",
-            "--chunk-method", "ffms2",       # Docker image includes ffms2; faster than select
+            "--chunk-method", "ffms2",
             "--concat", "mkvmerge",
-            "--sc-downscale-height", "360",  # faster scene detection on downscaled frames
+            "--sc-downscale-height", "360",
             "--pix-format", "yuv420p10le",
             "-v", svtav1_params_av1an,
             *(["--ffmpeg", f"-vf {vf_string}"] if vf_string else []),

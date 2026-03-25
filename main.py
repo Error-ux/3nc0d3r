@@ -372,7 +372,7 @@ async def main():
             "--chunk-method", "select",      # no extra deps; lsmash/ffms2 need VapourSynth
             "--concat", "mkvmerge",
             "--sc-downscale-height", "360",  # faster scene detection on downscaled frames
-            "--pix-fmt", "yuv420p10le",
+            "--pix-format", "yuv420p10le",
             "-v", svtav1_params_av1an,
             *(["--ffmpeg", f"-vf {vf_string}"] if vf_string else []),
             "--set-thread-affinity", "1",

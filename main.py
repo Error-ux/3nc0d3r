@@ -165,7 +165,7 @@ async def main():
             "zscale=t=bt709:m=bt709:r=tv",
             "format=yuv420p10le",
         ]
-    vf_filters.append("hqdn3d=1.5:1.2:1:1")
+    vf_filters.append("hqdn3d=1.5:1.2:1:3")
     video_filters = ["-vf", ",".join(vf_filters)]
 
     # Display label — show actual source height when no downscale requested
@@ -210,7 +210,7 @@ async def main():
     print(f"[svtav1] la-depth={la_depth} (duration={duration:.0f}s)")
 
     svtav1_tune = (
-        f"tune=0:film-grain={grain_val}:enable-overlays=1:"
+        f"tune=2:film-grain={grain_val}:enable-overlays=1:"
         f"aq-mode=2:variance-boost-strength=2:variance-octile=6:"
         f"enable-qm=1:qm-min=0:qm-max=12:sharpness=1:"
         f"scd=1:"                                            

@@ -190,42 +190,45 @@ jobs:
           rm -rf ffmpeg-master-latest-linux64-gpl*
 
       # ─────────────────────────────────────────────────────────────────────
-      # CACHE: av1an binary
-      # av1an splits the source into scenes and encodes them in parallel,
-      # giving a significant speed boost over single-pass FFmpeg on multi-core runners.
+      # INSTALL: av1an via official Docker image
+      # Replaces the old GitHub Releases binary download which was fragile
+      # (API rate limits, missing Linux assets). The Docker image is always
+      # up-to-date, includes all encoders, and needs no caching logic.
+      # main.py invokes av1an through `docker run` instead of a bare binary.
+      #
+      # CACHING: The image tarball (~2-3 GB) is saved to /tmp/av1an-image.tar
+      # and cached by its Docker Hub digest. The digest is fetched first (a
+      # cheap unauthenticated registry call) so the cache key changes only
+      # when the image actually changes upstream — not on every run.
       # ─────────────────────────────────────────────────────────────────────
-      - name: 📦 Cache av1an Binary
-        id: av1an-cache
+      - name: 🔍 Resolve av1an Image Digest
+        id: av1an-digest
+        run: |
+          DIGEST=$(curl -s "https://hub.docker.com/v2/repositories/masterofzen/av1an/tags/master" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['digest'])" 2>/dev/null || echo "unknown")
+          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+          echo "Cache key digest: ${DIGEST}"
+
+      - name: 📦 Cache av1an Docker Image
+        id: av1an-docker-cache
         uses: actions/cache@v4
         with:
-          path: /usr/local/bin/av1an
-          key: av1an-latest-linux64-v1
+          path: /tmp/av1an-image.tar
+          key: av1an-docker-${{ runner.os }}-${{ steps.av1an-digest.outputs.digest }}
 
-      - name: ⬇️ Install av1an (if not cached)
-        if: steps.av1an-cache.outputs.cache-hit != 'true'
+      - name: 🐳 Load or Pull av1an Docker Image
         run: |
-          echo "📥 Fetching latest av1an linux binary..."
-          ASSET_URL=$(curl -s https://api.github.com/repos/master-of-zen/Av1an/releases/latest \
-            | python3 -c "
-          import sys, json
-          assets = json.load(sys.stdin).get('assets', [])
-          urls = [a['browser_download_url'] for a in assets
-                  if 'linux' in a['name'].lower() and not a['name'].endswith('.sha256')]
-          print(urls[0] if urls else '')
-          ")
-          if [ -z "$ASSET_URL" ]; then
-            echo "⚠️  Could not resolve av1an binary URL — encoding will fall back to FFmpeg direct"
+          if [ "${{ steps.av1an-docker-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "📦 Loading av1an image from cache..."
+            docker load -i /tmp/av1an-image.tar
+            echo "✅ av1an Docker image loaded from cache"
           else
-            curl -L "$ASSET_URL" -o /usr/local/bin/av1an
-            chmod +x /usr/local/bin/av1an
-            echo "✅ av1an $(/usr/local/bin/av1an --version 2>&1 | head -1) installed"
+            echo "📥 Pulling av1an Docker image..."
+            docker pull masterofzen/av1an:master
+            echo "💾 Saving image to cache..."
+            docker save masterofzen/av1an:master -o /tmp/av1an-image.tar
+            echo "✅ av1an Docker image pulled and cached"
           fi
-
-      - name: ✅ Verify av1an (cache restore)
-        if: steps.av1an-cache.outputs.cache-hit == 'true'
-        run: |
-          chmod +x /usr/local/bin/av1an
-          echo "✅ av1an restored from cache"
 
       - name: 📁 Setup Session Dir
         run: mkdir -p tg_session_dir

@@ -173,21 +173,11 @@ async def main():
     res_label = res_label or f"Original({detect_quality(height)})"
 
     # -- AUDIO CONFIGURATION --
-    # If the source is already Opus, copy it losslessly to avoid generation loss.
-    # Otherwise re-encode to Opus at the configured bitrate.
+    # Always re-encode to Opus at the configured bitrate.
     final_audio_bitrate = config.AUDIO_BITRATE if (config.AUDIO_BITRATE and config.AUDIO_BITRATE.strip()) else "48k"
-    source_audio_codec = next(
-        (t.get("codec", "").lower() for t in audio_tracks), ""
-    )
-    if "opus" in source_audio_codec:
-        # Source is already Opus — copy losslessly, skip re-encode generation loss
-        audio_cmd = ["-c:a", "copy"]
-        final_audio_bitrate = "copy"
-        print(f"[audio] Source is Opus — copying losslessly (no re-encode)")
-    else:
-        audio_cmd = ["-af", "aformat=channel_layouts=stereo", "-c:a", "libopus",
-                     "-b:a", final_audio_bitrate, "-vbr", "on"]
-        print(f"[audio] Re-encoding to Opus @ {final_audio_bitrate}")
+    audio_cmd = ["-af", "aformat=channel_layouts=stereo", "-c:a", "libopus",
+                 "-b:a", final_audio_bitrate, "-vbr", "on"]
+    print(f"[audio] Re-encoding to Opus @ {final_audio_bitrate}")
 
     # -- SVT-AV1 PARAMETERS --
     # pin=0 is required for GitHub Actions (virtualized VMs don't honour CPU affinity).
@@ -213,8 +203,8 @@ async def main():
         f"tune=2:film-grain={grain_val}:enable-overlays=1:"
         f"aq-mode=2:variance-boost-strength=2:variance-octile=6:"
         f"enable-qm=1:qm-min=0:qm-max=12:sharpness=1:"
-        f"scd=1:"                                            
-        f"pin=0:lp=4:tile-columns=0:tile-rows=0:la-depth={la_depth}"  
+        f"scd=1:"
+        f"pin=0:lp=4:tile-columns=0:tile-rows=0:la-depth={la_depth}"
     )
 
     # UI Labels

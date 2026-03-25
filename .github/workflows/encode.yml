@@ -189,47 +189,6 @@ jobs:
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
           rm -rf ffmpeg-master-latest-linux64-gpl*
 
-      # ─────────────────────────────────────────────────────────────────────
-      # INSTALL: av1an via official Docker image
-      # Replaces the old GitHub Releases binary download which was fragile
-      # (API rate limits, missing Linux assets). The Docker image is always
-      # up-to-date, includes all encoders, and needs no caching logic.
-      # main.py invokes av1an through `docker run` instead of a bare binary.
-      #
-      # CACHING: The image tarball (~2-3 GB) is saved to /tmp/av1an-image.tar
-      # and cached by its Docker Hub digest. The digest is fetched first (a
-      # cheap unauthenticated registry call) so the cache key changes only
-      # when the image actually changes upstream — not on every run.
-      # ─────────────────────────────────────────────────────────────────────
-      - name: 🔍 Resolve av1an Image Digest
-        id: av1an-digest
-        run: |
-          DIGEST=$(curl -s "https://hub.docker.com/v2/repositories/masterofzen/av1an/tags/master" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['digest'])" 2>/dev/null || echo "unknown")
-          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
-          echo "Cache key digest: ${DIGEST}"
-
-      - name: 📦 Cache av1an Docker Image
-        id: av1an-docker-cache
-        uses: actions/cache@v4
-        with:
-          path: /tmp/av1an-image.tar
-          key: av1an-docker-${{ runner.os }}-${{ steps.av1an-digest.outputs.digest }}
-
-      - name: 🐳 Load or Pull av1an Docker Image
-        run: |
-          if [ "${{ steps.av1an-docker-cache.outputs.cache-hit }}" = "true" ]; then
-            echo "📦 Loading av1an image from cache..."
-            docker load -i /tmp/av1an-image.tar
-            echo "✅ av1an Docker image loaded from cache"
-          else
-            echo "📥 Pulling av1an Docker image..."
-            docker pull masterofzen/av1an:master
-            echo "💾 Saving image to cache..."
-            docker save masterofzen/av1an:master -o /tmp/av1an-image.tar
-            echo "✅ av1an Docker image pulled and cached"
-          fi
-
       - name: 📁 Setup Session Dir
         run: mkdir -p tg_session_dir
 

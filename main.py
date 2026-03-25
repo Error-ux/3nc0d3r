@@ -209,13 +209,42 @@ async def main():
         la_depth = 60
     print(f"[svtav1] la-depth={la_depth} (duration={duration:.0f}s)")
 
-    svtav1_tune = (
-        f"tune=0:film-grain={grain_val}:enable-overlays=1:"
+    # FFmpeg direct path: colon-separated k=v, lp=4 (all threads in one process)
+    svtav1_params_ffmpeg = (
+        f"tune=2:film-grain={grain_val}:enable-overlays=1:"
+        f"irefresh-type=2:"
         f"aq-mode=2:variance-boost-strength=2:variance-octile=6:"
         f"enable-qm=1:qm-min=0:qm-max=12:sharpness=1:"
-        f"scd=1:"                                            
-        f"pin=0:lp=4:tile-columns=0:tile-rows=0:la-depth={la_depth}"  
+        f"scd=1:keyint=240:"
+        f"pin=0:lp=4:la-depth={la_depth}"
     )
+
+    # Av1an path: space-separated --k v, lp=1 (av1an is the parallelism layer)
+    # NOTE: --pin and --la-depth were removed in SVT-AV1 v2.x — not passed here.
+    svtav1_params_av1an = (
+        f"--tune 2 --film-grain {grain_val} --enable-overlays 1 "
+        f"--irefresh-type 2 "
+        f"--aq-mode 2 --variance-boost-strength 2 --variance-octile 6 "
+        f"--enable-qm 1 --qm-min 0 --qm-max 12 --sharpness 1 "
+        f"--scd 1 --keyint 240 "
+        f"--lp 1"
+    )
+
+    # Use av1an if the Docker image is available — chunked parallel encoding is significantly faster.
+    # We invoke av1an via `docker run` rather than a bare binary (the old binary download was
+    # fragile: GitHub API rate limits + infrequent Linux binary releases).
+    def _av1an_docker_available() -> bool:
+        try:
+            result = subprocess.run(
+                ["docker", "image", "inspect", "masterofzen/av1an:master"],
+                capture_output=True,
+            )
+            return result.returncode == 0
+        except FileNotFoundError:
+            return False
+
+    USE_AV1AN = _av1an_docker_available()
+    print(f"[encode] {'av1an Docker image found — chunked parallel encode' if USE_AV1AN else 'av1an Docker image not found — using FFmpeg direct encode'}")
 
     # UI Labels
     hdr_label      = "HDR10" if is_hdr else "SDR"
@@ -304,42 +333,7 @@ async def main():
         print(f"[encode] Subtitle #s:{out_sub_idx} title set to '{lang_name}' (lang: {st['lang']})")
         out_sub_idx += 1
 
-    cmd = [
-        "ffmpeg",
-        # Input-side seeking (fast; placed BEFORE -i)
-        *([ "-ss", demo_start, "-t", demo_duration ] if demo_mode else []),
-        "-i", config.SOURCE,
-        *ocr_inputs,              # -i pgs_track_N.srt for each OCR'd PGS track
-        "-map", "0:v:0",
-        "-map", "0:a?",
-        "-map", "0:s?",
-        *pgs_exclusions,          # exclude original PGS streams
-        *ocr_maps,                # map OCR'd SRT inputs as subtitle streams
-        *video_filters,
-        "-c:v", "libsvtav1",
-        "-pix_fmt", "yuv420p10le",
-        "-crf", str(final_crf),
-        "-preset", str(final_preset),
-        "-svtav1-params", svtav1_tune,
-        "-threads", "0",
-        *audio_cmd,
-        *sub_title_meta,          # rename native subtitle titles
-        *ocr_meta,                # rename OCR'd subtitle titles (e.g. "Japanese (Signs)")
-        "-c:s", "copy",           # OCR SRT tracks are already text — copy is fine
-        "-map_chapters", "0",
-        "-progress", "pipe:1",
-        "-nostats",
-        "-y", config.FILE_NAME
-    ]
-
-    # asyncio subprocess so TG auth task can make progress on the same loop
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-
-    # Start resource monitor alongside encoding
+    # -- RESOURCE MONITOR + TIMING SETUP --
     monitor_stop  = asyncio.Event()
     monitor_stats = {}
     monitor_task  = asyncio.create_task(resource_monitor(monitor_stop, monitor_stats))
@@ -348,52 +342,238 @@ async def main():
     last_progress_pct = -1
     last_update_time  = 0
     last_ui_text      = None   # latest snapshot; pushed to TG when it connects mid-encode
+    encode_returncode = -1     # unified return code for both encode paths
 
-    with open(config.LOG_FILE, "w") as f_log:
-        async for raw_line in process.stdout:
-            line = raw_line.decode("utf-8", errors="replace")
-            f_log.write(line)
-            # Cancel is handled externally: the bridge Worker cancels the GitHub
-            # run via API (kill_{run_id}), which terminates this process directly.
-            # config.CANCELLED is never set — the check below is removed.
+    if USE_AV1AN:
+        # ── AV1AN PATH: chunked parallel encode ────────────────────────────
+        # av1an splits the source into scenes and encodes each in parallel.
+        # --chunk-method select uses pure FFmpeg — no VapourSynth deps needed.
+        # lp=1 per worker: av1an is the parallelism layer, not SVT-AV1.
+        video_only = f"_av1an_{config.FILE_NAME}"
+        vf_string  = ",".join(vf_filters) if vf_filters else None
+        cpu_count  = os.cpu_count() or 4
 
-            if "out_time_ms" in line:
-                try:
-                    curr_sec = int(line.split("=")[1]) / 1_000_000
-                    percent  = (curr_sec / duration) * 100
-                    elapsed  = time.time() - start_time
-                    speed    = curr_sec / elapsed if elapsed > 0 else 0
-                    fps      = (percent / 100 * total_frames) / elapsed if elapsed > 0 else 0
-                    eta      = (elapsed / percent) * (100 - percent) if percent > 0 else 0
-                    size_mb  = os.path.getsize(config.FILE_NAME) / (1024 * 1024) if os.path.exists(config.FILE_NAME) else 0
+        # av1an is invoked through Docker. The working directory is mounted as
+        # /videos inside the container so all paths must use that prefix.
+        # --user preserves file ownership so subsequent steps can read outputs.
+        # --privileged is required by the official av1an image.
+        cwd = os.getcwd()
+        src_in_container  = f"/videos/{os.path.basename(config.SOURCE)}"
+        out_in_container  = f"/videos/{os.path.basename(video_only)}"
 
-                    milestone   = int(percent // 1) * 1
-                    now         = time.time()
-                    pct_crossed = milestone > last_progress_pct
-                    time_due    = now - last_update_time >= 20
+        av1an_cmd = [
+            "docker", "run", "--rm", "--privileged",
+            "-v", f"{cwd}:/videos",
+            "--user", f"{os.getuid()}:{os.getgid()}",
+            "masterofzen/av1an:master",
+            "-i", src_in_container,
+            "--encoder", "svt-av1",
+            "--workers", str(cpu_count),
+            "--split-method", "av-scenechange",
+            "--chunk-method", "ffms2",       # Docker image includes ffms2; faster than select
+            "--concat", "mkvmerge",
+            "--sc-downscale-height", "360",  # faster scene detection on downscaled frames
+            "--pix-format", "yuv420p10le",
+            "-v", svtav1_params_av1an,
+            *(["--ffmpeg", f"-vf {vf_string}"] if vf_string else []),
+            "--set-thread-affinity", "1",
+            *(["--start-at", f"duration:{demo_start_sec}",
+               "--end-at",   f"duration:{demo_duration_sec}"] if demo_mode else []),
+            "-o", out_in_container,
+            "-y",
+        ]
 
-                    scifi_ui     = get_encode_ui(
-                        config.FILE_NAME, speed, fps, elapsed, eta,
-                        curr_sec, duration, percent,
-                        final_crf, final_preset, res_label,
-                        crop_label_txt, hdr_label, grain_label,
-                        config.AUDIO_MODE, final_audio_bitrate, size_mb,
-                        cpu=monitor_stats.get("sys_cpu"),
-                        ram=monitor_stats.get("sys_ram"),
-                        demo_label=demo_label,
-                    )
-                    last_ui_text = scifi_ui   # always keep the freshest snapshot
+        print(f"[av1an] Docker | Workers: {cpu_count} | params: {svtav1_params_av1an}")
+        process = await asyncio.create_subprocess_exec(
+            *av1an_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
 
-                    if pct_crossed or time_due:
-                        last_progress_pct = milestone
-                        last_update_time  = now
-                        # Only sends if TG is already ready; otherwise silently buffered
-                        await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
+        import re as _re
+        with open(config.LOG_FILE, "w") as f_log:
+            async for raw_line in process.stdout:
+                line = raw_line.decode("utf-8", errors="replace")
+                f_log.write(line)
 
-                except Exception:
-                    continue
+                # av1an progress lines: "encoded N/total, N.N fps, ..."
+                m_frames = _re.search(r"encoded\s+(\d+)/(\d+)", line)
+                m_fps    = _re.search(r"([\d.]+)\s*fps", line)
+                if m_frames:
+                    try:
+                        curr_frame = int(m_frames.group(1))
+                        fps_av1an  = float(m_fps.group(1)) if m_fps else 0.0
+                        percent    = min(100.0, (curr_frame / total_frames) * 100) if total_frames else 0
+                        elapsed    = time.time() - start_time
+                        curr_sec   = curr_frame / fps_val if fps_val > 0 else 0
+                        speed      = curr_sec / elapsed if elapsed > 0 else 0
+                        eta        = (elapsed / percent) * (100 - percent) if percent > 0 else 0
+                        size_mb    = os.path.getsize(video_only) / (1024*1024) if os.path.exists(video_only) else 0
 
-    await process.wait()
+                        milestone   = int(percent // 1) * 1
+                        now         = time.time()
+                        pct_crossed = milestone > last_progress_pct
+                        time_due    = now - last_update_time >= 20
+
+                        scifi_ui = get_encode_ui(
+                            config.FILE_NAME, speed, fps_av1an, elapsed, eta,
+                            curr_sec, duration, percent,
+                            final_crf, final_preset, res_label,
+                            crop_label_txt, hdr_label, grain_label,
+                            config.AUDIO_MODE, final_audio_bitrate, size_mb,
+                            cpu=monitor_stats.get("sys_cpu"),
+                            ram=monitor_stats.get("sys_ram"),
+                            demo_label=demo_label,
+                        )
+                        last_ui_text = scifi_ui
+
+                        if pct_crossed or time_due:
+                            last_progress_pct = milestone
+                            last_update_time  = now
+                            await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
+
+                    except Exception:
+                        continue
+
+        await process.wait()
+        encode_returncode = process.returncode
+
+        if encode_returncode == 0:
+            # ── MUX: merge av1an video with audio + subs from source ────────
+            await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.MUX ] Merging audio and subtitles...</b>")
+
+            # In the FFmpeg direct path, source is input 0 so pgs_exclusions use "-0:s:N".
+            # In the mux command source shifts to input 1 — rewrite the stream specifiers.
+            mux_pgs_excl = [
+                item.replace("-0:s:", "-1:s:") if item.startswith("-0:s:") else item
+                for item in pgs_exclusions
+            ]
+            # ocr_maps reference extra inputs starting at index 1 in the FFmpeg path.
+            # In the mux command those inputs start at index 2 — offset each input index.
+            mux_ocr_maps = [
+                f"{int(item.split(':')[0])+1}:{':'.join(item.split(':')[1:])}"
+                if (i % 2 == 1 and item[0].isdigit()) else item
+                for i, item in enumerate(ocr_maps)
+            ]
+
+            mux_cmd = [
+                "ffmpeg",
+                "-i", video_only,        # input 0 — encoded video only (no audio/subs)
+                "-i", config.SOURCE,     # input 1 — original source (audio + subs)
+                *ocr_inputs,             # inputs 2+ — OCR'd SRT files (if any)
+                "-map", "0:v:0",         # video from av1an output
+                "-map", "1:a?",          # audio from source
+                "-map", "1:s?",          # subs from source
+                *mux_pgs_excl,           # strip PGS (source is now input 1)
+                *mux_ocr_maps,           # OCR SRTs (input indices shifted +1)
+                *audio_cmd,              # re-encode or copy audio
+                *sub_title_meta,         # subtitle title metadata (output-stream-relative)
+                *ocr_meta,               # OCR subtitle titles
+                "-c:s", "copy",
+                "-c:v", "copy",          # video already encoded — stream copy only
+                "-map_chapters", "1",    # chapters from source
+                "-y", config.FILE_NAME,
+            ]
+
+            mux_proc = await asyncio.create_subprocess_exec(
+                *mux_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            with open(config.LOG_FILE, "a") as f_log:
+                async for raw_line in mux_proc.stdout:
+                    f_log.write(raw_line.decode("utf-8", errors="replace"))
+            await mux_proc.wait()
+            encode_returncode = mux_proc.returncode
+
+        # Always clean up the intermediate video-only file
+        if os.path.exists(video_only):
+            os.remove(video_only)
+
+    else:
+        # ── FFMPEG DIRECT PATH (fallback when av1an is not installed) ───────
+        cmd = [
+            "ffmpeg",
+            # Input-side seeking (fast; placed BEFORE -i)
+            *([ "-ss", demo_start, "-t", demo_duration ] if demo_mode else []),
+            "-i", config.SOURCE,
+            *ocr_inputs,              # -i pgs_track_N.srt for each OCR'd PGS track
+            "-map", "0:v:0",
+            "-map", "0:a?",
+            "-map", "0:s?",
+            *pgs_exclusions,          # exclude original PGS streams
+            *ocr_maps,                # map OCR'd SRT inputs as subtitle streams
+            *video_filters,
+            "-c:v", "libsvtav1",
+            "-pix_fmt", "yuv420p10le",
+            "-crf", str(final_crf),
+            "-preset", str(final_preset),
+            "-svtav1-params", svtav1_params_ffmpeg,
+            "-threads", "0",
+            *audio_cmd,
+            *sub_title_meta,          # rename native subtitle titles
+            *ocr_meta,                # rename OCR'd subtitle titles (e.g. "Japanese (Signs)")
+            "-c:s", "copy",           # OCR SRT tracks are already text — copy is fine
+            "-map_chapters", "0",
+            "-progress", "pipe:1",
+            "-nostats",
+            "-y", config.FILE_NAME
+        ]
+
+        # asyncio subprocess so TG auth task can make progress on the same loop
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+
+        with open(config.LOG_FILE, "w") as f_log:
+            async for raw_line in process.stdout:
+                line = raw_line.decode("utf-8", errors="replace")
+                f_log.write(line)
+                # Cancel is handled externally: the bridge Worker cancels the GitHub
+                # run via API (kill_{run_id}), which terminates this process directly.
+                # config.CANCELLED is never set — the check below is removed.
+
+                if "out_time_ms" in line:
+                    try:
+                        curr_sec = int(line.split("=")[1]) / 1_000_000
+                        percent  = (curr_sec / duration) * 100
+                        elapsed  = time.time() - start_time
+                        speed    = curr_sec / elapsed if elapsed > 0 else 0
+                        fps      = (percent / 100 * total_frames) / elapsed if elapsed > 0 else 0
+                        eta      = (elapsed / percent) * (100 - percent) if percent > 0 else 0
+                        size_mb  = os.path.getsize(config.FILE_NAME) / (1024 * 1024) if os.path.exists(config.FILE_NAME) else 0
+
+                        milestone   = int(percent // 1) * 1
+                        now         = time.time()
+                        pct_crossed = milestone > last_progress_pct
+                        time_due    = now - last_update_time >= 20
+
+                        scifi_ui = get_encode_ui(
+                            config.FILE_NAME, speed, fps, elapsed, eta,
+                            curr_sec, duration, percent,
+                            final_crf, final_preset, res_label,
+                            crop_label_txt, hdr_label, grain_label,
+                            config.AUDIO_MODE, final_audio_bitrate, size_mb,
+                            cpu=monitor_stats.get("sys_cpu"),
+                            ram=monitor_stats.get("sys_ram"),
+                            demo_label=demo_label,
+                        )
+                        last_ui_text = scifi_ui   # always keep the freshest snapshot
+
+                        if pct_crossed or time_due:
+                            last_progress_pct = milestone
+                            last_update_time  = now
+                            # Only sends if TG is already ready; otherwise silently buffered
+                            await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
+
+                    except Exception:
+                        continue
+
+        await process.wait()
+        encode_returncode = process.returncode
+
     monitor_stop.set()
     await monitor_task
     total_mission_time = time.time() - start_time
@@ -426,7 +606,7 @@ async def main():
             await tg_edit(tg_state, tg_ready, last_ui_text, reply_markup=encode_buttons)
 
         # 6. ERROR HANDLING
-        if process.returncode != 0:
+        if encode_returncode != 0:
             error_snippet = (
                 "".join(open(config.LOG_FILE).readlines()[-10:])
                 if os.path.exists(config.LOG_FILE)

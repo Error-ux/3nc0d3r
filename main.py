@@ -220,13 +220,14 @@ async def main():
     )
 
     # Av1an path: space-separated --k v, lp=1 (av1an is the parallelism layer)
+    # NOTE: --pin and --la-depth were removed in SVT-AV1 v2.x — not passed here.
     svtav1_params_av1an = (
         f"--tune 2 --film-grain {grain_val} --enable-overlays 1 "
         f"--irefresh-type 2 "
         f"--aq-mode 2 --variance-boost-strength 2 --variance-octile 6 "
         f"--enable-qm 1 --qm-min 0 --qm-max 12 --sharpness 1 "
         f"--scd 1 --keyint 240 "
-        f"--pin 0 --lp 1 --la-depth {la_depth}"
+        f"--lp 1"
     )
 
     # Use av1an if the Docker image is available — chunked parallel encoding is significantly faster.
@@ -369,7 +370,7 @@ async def main():
             "--encoder", "svt-av1",
             "--workers", str(cpu_count),
             "--split-method", "av-scenechange",
-            "--chunk-method", "select",      # no extra deps; lsmash/ffms2 need VapourSynth
+            "--chunk-method", "ffms2",       # Docker image includes ffms2; faster than select
             "--concat", "mkvmerge",
             "--sc-downscale-height", "360",  # faster scene detection on downscaled frames
             "--pix-format", "yuv420p10le",

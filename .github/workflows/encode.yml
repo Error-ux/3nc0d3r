@@ -189,6 +189,44 @@ jobs:
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
           rm -rf ffmpeg-master-latest-linux64-gpl*
 
+      # ─────────────────────────────────────────────────────────────────────
+      # CACHE: av1an binary
+      # av1an splits the source into scenes and encodes them in parallel,
+      # giving a significant speed boost over single-pass FFmpeg on multi-core runners.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: 📦 Cache av1an Binary
+        id: av1an-cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/av1an
+          key: av1an-latest-linux64-v1
+
+      - name: ⬇️ Install av1an (if not cached)
+        if: steps.av1an-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "📥 Fetching latest av1an linux binary..."
+          ASSET_URL=$(curl -s https://api.github.com/repos/master-of-zen/Av1an/releases/latest \
+            | python3 -c "
+          import sys, json
+          assets = json.load(sys.stdin).get('assets', [])
+          urls = [a['browser_download_url'] for a in assets
+                  if 'linux' in a['name'].lower() and not a['name'].endswith('.sha256')]
+          print(urls[0] if urls else '')
+          ")
+          if [ -z "$ASSET_URL" ]; then
+            echo "⚠️  Could not resolve av1an binary URL — encoding will fall back to FFmpeg direct"
+          else
+            curl -L "$ASSET_URL" -o /usr/local/bin/av1an
+            chmod +x /usr/local/bin/av1an
+            echo "✅ av1an $(/usr/local/bin/av1an --version 2>&1 | head -1) installed"
+          fi
+
+      - name: ✅ Verify av1an (cache restore)
+        if: steps.av1an-cache.outputs.cache-hit == 'true'
+        run: |
+          chmod +x /usr/local/bin/av1an
+          echo "✅ av1an restored from cache"
+
       - name: 📁 Setup Session Dir
         run: mkdir -p tg_session_dir
 

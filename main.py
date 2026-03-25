@@ -232,9 +232,17 @@ async def main():
         f"--lp 1"
     )
 
-    # Use av1an if available — chunked parallel encoding is significantly faster.
-    USE_AV1AN = shutil.which("av1an") is not None
-    print(f"[encode] {'av1an detected — chunked parallel encode' if USE_AV1AN else 'av1an not found — using FFmpeg direct encode'}")
+    # Use av1an Docker image if available — chunked parallel encoding is significantly faster.
+    def _av1an_docker_available() -> bool:
+        try:
+            r = subprocess.run(["docker", "image", "inspect", "masterofzen/av1an:master"],
+                               capture_output=True)
+            return r.returncode == 0
+        except FileNotFoundError:
+            return False
+
+    USE_AV1AN = _av1an_docker_available()
+    print(f"[encode] {'av1an Docker image found — chunked parallel encode' if USE_AV1AN else 'av1an not found — using FFmpeg direct encode'}")
 
     # UI Labels
     hdr_label      = "HDR10" if is_hdr else "SDR"
@@ -343,10 +351,19 @@ async def main():
         vf_string  = ",".join(vf_filters) if vf_filters else None
         cpu_count  = os.cpu_count() or 4
 
+        cwd = os.getcwd()
+        src_in_container = f"/videos/{os.path.basename(config.SOURCE)}"
+        out_in_container = f"/videos/{os.path.basename(video_only)}"
+
         av1an_cmd = [
-            "stdbuf", "-oL", "-eL",   # force line-buffered output so progress lines flush immediately
-            "av1an",
-            "-i", config.SOURCE,
+            "docker", "run", "--rm", "--privileged",
+            "-v", f"{cwd}:/videos",
+            "--user", f"{os.getuid()}:{os.getgid()}",
+            "--entrypoint", "stdbuf",   # force line-buffered output — no TTY needed
+            "masterofzen/av1an:master",
+            "-oL", "-eL",              # stdbuf args: line-buffer stdout + stderr
+            "av1an",                   # actual binary
+            "-i", src_in_container,
             "--encoder", "svt-av1",
             "--workers", str(cpu_count),
             "--split-method", "av-scenechange",
@@ -359,15 +376,15 @@ async def main():
             "--set-thread-affinity", "1",
             *(["--start-at", f"duration:{demo_start_sec}",
                "--end-at",   f"duration:{demo_duration_sec}"] if demo_mode else []),
-            "-o", video_only,
+            "-o", out_in_container,
             "-y",
         ]
 
-        print(f"[av1an] Workers: {cpu_count} | params: {svtav1_params_av1an}")
+        print(f"[av1an] Docker | Workers: {cpu_count} | params: {svtav1_params_av1an}")
         process = await asyncio.create_subprocess_exec(
             *av1an_cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,  # merge stderr into stdout — single stream to read
+            stderr=asyncio.subprocess.STDOUT,  # merge — single stream, no deadlock risk
         )
 
         import re as _re

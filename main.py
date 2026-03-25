@@ -221,7 +221,9 @@ async def main():
 
     # Av1an path: space-separated --k v, lp=1 (av1an is the parallelism layer)
     # NOTE: --pin and --la-depth were removed in SVT-AV1 v2.x — not passed here.
+    # --preset and --crf must be explicit here; av1an does not forward them automatically.
     svtav1_params_av1an = (
+        f"--preset {final_preset} --crf {final_crf} "
         f"--tune 2 --film-grain {grain_val} --enable-overlays 1 "
         f"--irefresh-type 2 "
         f"--aq-mode 2 --variance-boost-strength 2 --variance-octile 6 "
@@ -363,16 +365,22 @@ async def main():
 
         av1an_cmd = [
             "docker", "run", "--rm", "--privileged",
+            # No -t (TTY): combining PTY with asyncio PIPE causes deadlocks.
+            # Buffering is handled by stdbuf below.
             "-v", f"{cwd}:/videos",
             "--user", f"{os.getuid()}:{os.getgid()}",
+            "--entrypoint", "stdbuf",            # wrap av1an in stdbuf to force line-buffered output
             "masterofzen/av1an:master",
+            "-oL",                               # stdbuf: stdout line-buffered
+            "-eL",                               # stdbuf: stderr line-buffered
+            "av1an",                             # actual binary inside the container
             "-i", src_in_container,
             "--encoder", "svt-av1",
             "--workers", str(cpu_count),
             "--split-method", "av-scenechange",
-            "--chunk-method", "ffms2",       # Docker image includes ffms2; faster than select
+            "--chunk-method", "ffms2",
             "--concat", "mkvmerge",
-            "--sc-downscale-height", "360",  # faster scene detection on downscaled frames
+            "--sc-downscale-height", "360",
             "--pix-format", "yuv420p10le",
             "-v", svtav1_params_av1an,
             *(["--ffmpeg", f"-vf {vf_string}"] if vf_string else []),
@@ -387,53 +395,71 @@ async def main():
         process = await asyncio.create_subprocess_exec(
             *av1an_cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stderr=asyncio.subprocess.PIPE,   # capture stderr separately — av1an progress goes there
         )
 
         import re as _re
-        with open(config.LOG_FILE, "w") as f_log:
-            async for raw_line in process.stdout:
-                line = raw_line.decode("utf-8", errors="replace")
-                f_log.write(line)
 
-                # av1an progress lines: "encoded N/total, N.N fps, ..."
-                m_frames = _re.search(r"encoded\s+(\d+)/(\d+)", line)
-                m_fps    = _re.search(r"([\d.]+)\s*fps", line)
-                if m_frames:
-                    try:
-                        curr_frame = int(m_frames.group(1))
-                        fps_av1an  = float(m_fps.group(1)) if m_fps else 0.0
-                        percent    = min(100.0, (curr_frame / total_frames) * 100) if total_frames else 0
-                        elapsed    = time.time() - start_time
-                        curr_sec   = curr_frame / fps_val if fps_val > 0 else 0
-                        speed      = curr_sec / elapsed if elapsed > 0 else 0
-                        eta        = (elapsed / percent) * (100 - percent) if percent > 0 else 0
-                        size_mb    = os.path.getsize(video_only) / (1024*1024) if os.path.exists(video_only) else 0
+        # av1an writes INFO/WARN/progress to stderr, muxer noise to stdout.
+        # We tail stderr for progress and log both streams.
+        async def _drain_stdout():
+            with open(config.LOG_FILE, "w") as f_log:
+                async for raw in process.stdout:
+                    f_log.write(raw.decode("utf-8", errors="replace"))
 
-                        milestone   = int(percent // 1) * 1
-                        now         = time.time()
-                        pct_crossed = milestone > last_progress_pct
-                        time_due    = now - last_update_time >= 20
+        stdout_task = asyncio.create_task(_drain_stdout())
 
-                        scifi_ui = get_encode_ui(
-                            config.FILE_NAME, speed, fps_av1an, elapsed, eta,
-                            curr_sec, duration, percent,
-                            final_crf, final_preset, res_label,
-                            crop_label_txt, hdr_label, grain_label,
-                            config.AUDIO_MODE, final_audio_bitrate, size_mb,
-                            cpu=monitor_stats.get("sys_cpu"),
-                            ram=monitor_stats.get("sys_ram"),
-                            demo_label=demo_label,
-                        )
-                        last_ui_text = scifi_ui
+        # av1an progress line formats (varies by version):
+        #   "[00:00:05] 125/2048 frames, 24.50 fps, ..."   ← most common
+        #   "encoded 125/2048, 24.50 fps, ..."             ← older builds
+        _re_frames  = _re.compile(r"(\d+)/(\d+)\s+frames|encoded\s+(\d+)/(\d+)")
+        _re_fps     = _re.compile(r"([\d.]+)\s*fps")
 
-                        if pct_crossed or time_due:
-                            last_progress_pct = milestone
-                            last_update_time  = now
-                            await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
+        async for raw_line in process.stderr:
+            line = raw_line.decode("utf-8", errors="replace").rstrip()
+            print(line)   # surface av1an output to Actions log
 
-                    except Exception:
-                        continue
+            m = _re_frames.search(line)
+            if m:
+                try:
+                    # group(1,2) for "frames" format; group(3,4) for "encoded" format
+                    curr_frame = int(m.group(1) or m.group(3))
+                    # total_frames from source metadata is reliable; ignore m.group(2/4)
+                    m_fps    = _re_fps.search(line)
+                    fps_av1an  = float(m_fps.group(1)) if m_fps else 0.0
+                    percent    = min(100.0, (curr_frame / total_frames) * 100) if total_frames else 0
+                    elapsed    = time.time() - start_time
+                    curr_sec   = curr_frame / fps_val if fps_val > 0 else 0
+                    speed      = curr_sec / elapsed if elapsed > 0 else 0
+                    eta        = (elapsed / percent) * (100 - percent) if percent > 0 else 0
+                    size_mb    = os.path.getsize(video_only) / (1024*1024) if os.path.exists(video_only) else 0
+
+                    milestone   = int(percent // 1) * 1
+                    now         = time.time()
+                    pct_crossed = milestone > last_progress_pct
+                    time_due    = now - last_update_time >= 20
+
+                    scifi_ui = get_encode_ui(
+                        config.FILE_NAME, speed, fps_av1an, elapsed, eta,
+                        curr_sec, duration, percent,
+                        final_crf, final_preset, res_label,
+                        crop_label_txt, hdr_label, grain_label,
+                        config.AUDIO_MODE, final_audio_bitrate, size_mb,
+                        cpu=monitor_stats.get("sys_cpu"),
+                        ram=monitor_stats.get("sys_ram"),
+                        demo_label=demo_label,
+                    )
+                    last_ui_text = scifi_ui
+
+                    if pct_crossed or time_due:
+                        last_progress_pct = milestone
+                        last_update_time  = now
+                        await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
+
+                except Exception:
+                    continue
+
+        await stdout_task
 
         await process.wait()
         encode_returncode = process.returncode

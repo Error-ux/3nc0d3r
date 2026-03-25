@@ -229,9 +229,21 @@ async def main():
         f"--pin 0 --lp 1 --la-depth {la_depth}"
     )
 
-    # Use av1an if available — chunked parallel encoding is significantly faster
-    USE_AV1AN = shutil.which("av1an") is not None
-    print(f"[encode] {'av1an detected — chunked parallel encode' if USE_AV1AN else 'av1an not found — using FFmpeg direct encode'}")
+    # Use av1an if the Docker image is available — chunked parallel encoding is significantly faster.
+    # We invoke av1an via `docker run` rather than a bare binary (the old binary download was
+    # fragile: GitHub API rate limits + infrequent Linux binary releases).
+    def _av1an_docker_available() -> bool:
+        try:
+            result = subprocess.run(
+                ["docker", "image", "inspect", "masterofzen/av1an:master"],
+                capture_output=True,
+            )
+            return result.returncode == 0
+        except FileNotFoundError:
+            return False
+
+    USE_AV1AN = _av1an_docker_available()
+    print(f"[encode] {'av1an Docker image found — chunked parallel encode' if USE_AV1AN else 'av1an Docker image not found — using FFmpeg direct encode'}")
 
     # UI Labels
     hdr_label      = "HDR10" if is_hdr else "SDR"
@@ -340,9 +352,20 @@ async def main():
         vf_string  = ",".join(vf_filters) if vf_filters else None
         cpu_count  = os.cpu_count() or 4
 
+        # av1an is invoked through Docker. The working directory is mounted as
+        # /videos inside the container so all paths must use that prefix.
+        # --user preserves file ownership so subsequent steps can read outputs.
+        # --privileged is required by the official av1an image.
+        cwd = os.getcwd()
+        src_in_container  = f"/videos/{os.path.basename(config.SOURCE)}"
+        out_in_container  = f"/videos/{os.path.basename(video_only)}"
+
         av1an_cmd = [
-            "av1an",
-            "-i", config.SOURCE,
+            "docker", "run", "--rm", "--privileged",
+            "-v", f"{cwd}:/videos",
+            "--user", f"{os.getuid()}:{os.getgid()}",
+            "masterofzen/av1an:master",
+            "-i", src_in_container,
             "--encoder", "svt-av1",
             "--workers", str(cpu_count),
             "--split-method", "av-scenechange",
@@ -355,11 +378,11 @@ async def main():
             "--set-thread-affinity", "1",
             *(["--start-at", f"duration:{demo_start_sec}",
                "--end-at",   f"duration:{demo_duration_sec}"] if demo_mode else []),
-            "-o", video_only,
+            "-o", out_in_container,
             "-y",
         ]
 
-        print(f"[av1an] Workers: {cpu_count} | params: {svtav1_params_av1an}")
+        print(f"[av1an] Docker | Workers: {cpu_count} | params: {svtav1_params_av1an}")
         process = await asyncio.create_subprocess_exec(
             *av1an_cmd,
             stdout=asyncio.subprocess.PIPE,

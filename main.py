@@ -232,21 +232,9 @@ async def main():
         f"--lp 1"
     )
 
-    # Use av1an if the Docker image is available — chunked parallel encoding is significantly faster.
-    # We invoke av1an via `docker run` rather than a bare binary (the old binary download was
-    # fragile: GitHub API rate limits + infrequent Linux binary releases).
-    def _av1an_docker_available() -> bool:
-        try:
-            result = subprocess.run(
-                ["docker", "image", "inspect", "masterofzen/av1an:master"],
-                capture_output=True,
-            )
-            return result.returncode == 0
-        except FileNotFoundError:
-            return False
-
-    USE_AV1AN = _av1an_docker_available()
-    print(f"[encode] {'av1an Docker image found — chunked parallel encode' if USE_AV1AN else 'av1an Docker image not found — using FFmpeg direct encode'}")
+    # Use av1an if available — chunked parallel encoding is significantly faster.
+    USE_AV1AN = shutil.which("av1an") is not None
+    print(f"[encode] {'av1an detected — chunked parallel encode' if USE_AV1AN else 'av1an not found — using FFmpeg direct encode'}")
 
     # UI Labels
     hdr_label      = "HDR10" if is_hdr else "SDR"
@@ -355,26 +343,10 @@ async def main():
         vf_string  = ",".join(vf_filters) if vf_filters else None
         cpu_count  = os.cpu_count() or 4
 
-        # av1an is invoked through Docker. The working directory is mounted as
-        # /videos inside the container so all paths must use that prefix.
-        # --user preserves file ownership so subsequent steps can read outputs.
-        # --privileged is required by the official av1an image.
-        cwd = os.getcwd()
-        src_in_container  = f"/videos/{os.path.basename(config.SOURCE)}"
-        out_in_container  = f"/videos/{os.path.basename(video_only)}"
-
         av1an_cmd = [
-            "docker", "run", "--rm", "--privileged",
-            # No -t (TTY): combining PTY with asyncio PIPE causes deadlocks.
-            # Buffering is handled by stdbuf below.
-            "-v", f"{cwd}:/videos",
-            "--user", f"{os.getuid()}:{os.getgid()}",
-            "--entrypoint", "stdbuf",            # wrap av1an in stdbuf to force line-buffered output
-            "masterofzen/av1an:master",
-            "-oL",                               # stdbuf: stdout line-buffered
-            "-eL",                               # stdbuf: stderr line-buffered
-            "av1an",                             # actual binary inside the container
-            "-i", src_in_container,
+            "stdbuf", "-oL", "-eL",   # force line-buffered output so progress lines flush immediately
+            "av1an",
+            "-i", config.SOURCE,
             "--encoder", "svt-av1",
             "--workers", str(cpu_count),
             "--split-method", "av-scenechange",
@@ -387,27 +359,18 @@ async def main():
             "--set-thread-affinity", "1",
             *(["--start-at", f"duration:{demo_start_sec}",
                "--end-at",   f"duration:{demo_duration_sec}"] if demo_mode else []),
-            "-o", out_in_container,
+            "-o", video_only,
             "-y",
         ]
 
-        print(f"[av1an] Docker | Workers: {cpu_count} | params: {svtav1_params_av1an}")
+        print(f"[av1an] Workers: {cpu_count} | params: {svtav1_params_av1an}")
         process = await asyncio.create_subprocess_exec(
             *av1an_cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,   # capture stderr separately — av1an progress goes there
+            stderr=asyncio.subprocess.STDOUT,  # merge stderr into stdout — single stream to read
         )
 
         import re as _re
-
-        # av1an writes INFO/WARN/progress to stderr, muxer noise to stdout.
-        # We tail stderr for progress and log both streams.
-        async def _drain_stdout():
-            with open(config.LOG_FILE, "w") as f_log:
-                async for raw in process.stdout:
-                    f_log.write(raw.decode("utf-8", errors="replace"))
-
-        stdout_task = asyncio.create_task(_drain_stdout())
 
         # av1an progress line formats (varies by version):
         #   "[00:00:05] 125/2048 frames, 24.50 fps, ..."   ← most common
@@ -415,51 +378,51 @@ async def main():
         _re_frames  = _re.compile(r"(\d+)/(\d+)\s+frames|encoded\s+(\d+)/(\d+)")
         _re_fps     = _re.compile(r"([\d.]+)\s*fps")
 
-        async for raw_line in process.stderr:
-            line = raw_line.decode("utf-8", errors="replace").rstrip()
-            print(line)   # surface av1an output to Actions log
+        with open(config.LOG_FILE, "w") as f_log:
+            async for raw_line in process.stdout:
+                line = raw_line.decode("utf-8", errors="replace").rstrip()
+                f_log.write(line + "\n")
+                print(line)
 
-            m = _re_frames.search(line)
-            if m:
-                try:
-                    # group(1,2) for "frames" format; group(3,4) for "encoded" format
-                    curr_frame = int(m.group(1) or m.group(3))
-                    # total_frames from source metadata is reliable; ignore m.group(2/4)
-                    m_fps    = _re_fps.search(line)
-                    fps_av1an  = float(m_fps.group(1)) if m_fps else 0.0
-                    percent    = min(100.0, (curr_frame / total_frames) * 100) if total_frames else 0
-                    elapsed    = time.time() - start_time
-                    curr_sec   = curr_frame / fps_val if fps_val > 0 else 0
-                    speed      = curr_sec / elapsed if elapsed > 0 else 0
-                    eta        = (elapsed / percent) * (100 - percent) if percent > 0 else 0
-                    size_mb    = os.path.getsize(video_only) / (1024*1024) if os.path.exists(video_only) else 0
+                m = _re_frames.search(line)
+                if m:
+                    try:
+                        # group(1,2) for "frames" format; group(3,4) for "encoded" format
+                        curr_frame = int(m.group(1) or m.group(3))
+                        # total_frames from source metadata is reliable; ignore m.group(2/4)
+                        m_fps    = _re_fps.search(line)
+                        fps_av1an  = float(m_fps.group(1)) if m_fps else 0.0
+                        percent    = min(100.0, (curr_frame / total_frames) * 100) if total_frames else 0
+                        elapsed    = time.time() - start_time
+                        curr_sec   = curr_frame / fps_val if fps_val > 0 else 0
+                        speed      = curr_sec / elapsed if elapsed > 0 else 0
+                        eta        = (elapsed / percent) * (100 - percent) if percent > 0 else 0
+                        size_mb    = os.path.getsize(video_only) / (1024*1024) if os.path.exists(video_only) else 0
 
-                    milestone   = int(percent // 1) * 1
-                    now         = time.time()
-                    pct_crossed = milestone > last_progress_pct
-                    time_due    = now - last_update_time >= 20
+                        milestone   = int(percent // 1) * 1
+                        now         = time.time()
+                        pct_crossed = milestone > last_progress_pct
+                        time_due    = now - last_update_time >= 20
 
-                    scifi_ui = get_encode_ui(
-                        config.FILE_NAME, speed, fps_av1an, elapsed, eta,
-                        curr_sec, duration, percent,
-                        final_crf, final_preset, res_label,
-                        crop_label_txt, hdr_label, grain_label,
-                        config.AUDIO_MODE, final_audio_bitrate, size_mb,
-                        cpu=monitor_stats.get("sys_cpu"),
-                        ram=monitor_stats.get("sys_ram"),
-                        demo_label=demo_label,
-                    )
-                    last_ui_text = scifi_ui
+                        scifi_ui = get_encode_ui(
+                            config.FILE_NAME, speed, fps_av1an, elapsed, eta,
+                            curr_sec, duration, percent,
+                            final_crf, final_preset, res_label,
+                            crop_label_txt, hdr_label, grain_label,
+                            config.AUDIO_MODE, final_audio_bitrate, size_mb,
+                            cpu=monitor_stats.get("sys_cpu"),
+                            ram=monitor_stats.get("sys_ram"),
+                            demo_label=demo_label,
+                        )
+                        last_ui_text = scifi_ui
 
-                    if pct_crossed or time_due:
-                        last_progress_pct = milestone
-                        last_update_time  = now
-                        await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
+                        if pct_crossed or time_due:
+                            last_progress_pct = milestone
+                            last_update_time  = now
+                            await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
 
-                except Exception:
-                    continue
-
-        await stdout_task
+                    except Exception:
+                        continue
 
         await process.wait()
         encode_returncode = process.returncode

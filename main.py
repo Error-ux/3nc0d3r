@@ -221,7 +221,9 @@ async def main():
 
     # Av1an path: space-separated --k v, lp=1 (av1an is the parallelism layer)
     # NOTE: --pin and --la-depth were removed in SVT-AV1 v2.x — not passed here.
+    # --preset and --crf must be explicit here; av1an does not forward them automatically.
     svtav1_params_av1an = (
+        f"--preset {final_preset} --crf {final_crf} "
         f"--tune 2 --film-grain {grain_val} --enable-overlays 1 "
         f"--irefresh-type 2 "
         f"--aq-mode 2 --variance-boost-strength 2 --variance-octile 6 "

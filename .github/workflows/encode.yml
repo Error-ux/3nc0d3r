@@ -190,32 +190,40 @@ jobs:
           rm -rf ffmpeg-master-latest-linux64-gpl*
 
       # ─────────────────────────────────────────────────────────────────────
-      # INSTALL: av1an binary from rust-av/Av1an (active fork, rolling CI builds)
-      # The `latest` tag is a pinned rolling release — always points to the
-      # newest successful CI build. Asset URL is stable and needs no API call.
-      # Cached by a fixed key; bust the key (e.g. v2 → v3) to force a refresh.
+      # INSTALL: av1an built from source (rust-av/Av1an)
+      # No prebuilt Linux binary is distributed — we compile via cargo.
+      # Cached by Cargo.lock hash so it only rebuilds when av1an updates.
+      # Cold build takes ~5 min; cache hits restore in ~10s.
+      # Dependencies: nasm (for SVT-AV1 asm), clang, libavformat (ffmpeg dev)
       # ─────────────────────────────────────────────────────────────────────
       - name: 📦 Cache av1an Binary
         id: av1an-cache
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/av1an
-          key: av1an-rust-av-latest-${{ runner.os }}-v1
+          key: av1an-source-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-v1
+          restore-keys: |
+            av1an-source-${{ runner.os }}-
 
-      - name: ⬇️ Install av1an (if not cached)
+      - name: ⬇️ Build av1an from source (if not cached)
         if: steps.av1an-cache.outputs.cache-hit != 'true'
         run: |
-          echo "📥 Downloading av1an from rust-av/Av1an latest..."
-          curl -L "https://github.com/rust-av/Av1an/releases/download/latest/av1an" \
-            -o /usr/local/bin/av1an
-          chmod +x /usr/local/bin/av1an
-          echo "✅ av1an $(/usr/local/bin/av1an --version 2>&1 | head -1) installed"
+          echo "📥 Installing build dependencies..."
+          sudo apt-get install -y nasm clang libavformat-dev libavfilter-dev \
+            libavdevice-dev libclang-dev
+
+          echo "🦀 Installing Rust toolchain..."
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          source "$HOME/.cargo/env"
+
+          echo "🔨 Building av1an..."
+          cargo install av1an --locked
+          cp "$HOME/.cargo/bin/av1an" /usr/local/bin/av1an
+          echo "✅ av1an $(/usr/local/bin/av1an --version 2>&1 | head -1) built and installed"
 
       - name: ✅ Verify av1an (cache restore)
         if: steps.av1an-cache.outputs.cache-hit == 'true'
-        run: |
-          chmod +x /usr/local/bin/av1an
-          echo "✅ av1an $(/usr/local/bin/av1an --version 2>&1 | head -1) restored from cache"
+        run: echo "✅ av1an $(/usr/local/bin/av1an --version 2>&1 | head -1) restored from cache"
 
       - name: 📁 Setup Session Dir
         run: mkdir -p tg_session_dir

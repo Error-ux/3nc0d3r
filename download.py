@@ -5,8 +5,8 @@ Handles all source acquisition for the AV1 pipeline.
 URL routing:
   tg_file: / t.me/   →  tg_handler.py  (Pyrogram bot download)
   magnet:             →  blocked (exits 1)
+  CDN_REFERER_MAP     →  proxy + aria2c, fallback to yt-dlp on failure
   *.m3u8 / platforms  →  yt-dlp + aria2c, with CDN referer auto-detection
-  CDN_REFERER_MAP     →  aria2c via CF-bypass proxy (direct, no yt-dlp)
   everything else     →  aria2c direct first, proxy fallback on failure
 
 Outputs:
@@ -32,7 +32,7 @@ RUN_NUMBER = os.environ.get("GITHUB_RUN_NUMBER", "?")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CDN → Referer map
-# Any domain listed here is always downloaded via CF-bypass proxy + aria2c.
+# Any domain listed here is tried via CF-bypass proxy first, then yt-dlp.
 # ─────────────────────────────────────────────────────────────────────────────
 CDN_REFERER_MAP = {
     "uwucdn.top":           "https://kwik.cx/",
@@ -214,24 +214,61 @@ def download_telegram():
 def download_cdn_proxy():
     """
     For domains in CDN_REFERER_MAP (e.g. uwucdn.top, kwik.cx):
-    always use CF-bypass proxy + aria2c directly, no yt-dlp involved.
-    The original URL is proxied (not the curl-resolved one) since CDN
-    URLs are already final and curl may not follow auth-gated redirects.
+
+    Attempt 1 — CF-bypass proxy + aria2c (fast, no yt-dlp overhead).
+    Attempt 2 — yt-dlp with impersonation + referer (handles stricter CF checks).
+
+    The original URL is used directly (not curl-resolved) since CDN auth
+    tokens are embedded in the URL and curl may not follow them correctly.
     """
     output_name = resolve_output_name()
     write_fname(output_name)
 
-    notify_download_start("aria2c (CF-proxy)", output_name)
+    notify_download_start("aria2c (CF-proxy → yt-dlp fallback)", output_name)
 
-    referer, _ = detect_referer(URL)
+    referer, ffmpeg_headers = detect_referer(URL)
     ref = referer or "https://kwik.cx/"
 
+    # ── Attempt 1: CF-bypass proxy + aria2c ──────────────────────────────────
     proxied = build_proxy_url(URL)
-    print(f"🌐 CDN proxy URL: {proxied}", flush=True)
+    print(f"📥 Attempt 1/2: CF-proxy + aria2c  [{output_name}]", flush=True)
+    print(f"🌐 Proxy URL: {proxied}", flush=True)
 
     cmd = build_aria2c_cmd(proxied, referer=ref)
-    print(f"📥 CDN → proxy + aria2c  [{output_name}]", flush=True)
-    run(cmd, label="aria2c")
+    exit_code = run_no_exit(cmd, label="aria2c-proxy")
+
+    if exit_code == 0:
+        print("✅ Proxy download succeeded.", flush=True)
+        return
+
+    # ── Attempt 2: yt-dlp with impersonation ─────────────────────────────────
+    print(f"🔄 Attempt 2/2: proxy failed — retrying via yt-dlp  [{output_name}]", flush=True)
+    cleanup_partial()
+
+    ytdlp_cmd = [
+        "yt-dlp",
+        "--add-header", f"Referer:{ref}",
+        "--add-header", "User-Agent:Mozilla/5.0",
+        "--extractor-args", "generic:impersonate",
+        "--downloader", "aria2c",
+        "--downloader-args",
+        "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn "
+        "--summary-interval=10 --retry-wait=5 --max-tries=10",
+        "--merge-output-format", "mkv",
+        "-o", "source.mkv",
+    ]
+
+    if ffmpeg_headers:
+        ytdlp_cmd += ["--downloader-args", f"ffmpeg_i:{ffmpeg_headers}"]
+
+    ytdlp_cmd.append(URL)
+    exit_code = run_no_exit(ytdlp_cmd, label="yt-dlp-fallback")
+
+    if exit_code != 0:
+        print("❌ Both proxy and yt-dlp attempts failed. Aborting.", flush=True)
+        sys.exit(exit_code)
+
+    print("✅ yt-dlp fallback succeeded.", flush=True)
 
 
 def download_hls_or_platform():
@@ -341,8 +378,8 @@ def route():
         anibd.download(URL)
         return
 
-    # ── Known CDN domains (CDN_REFERER_MAP) → CF-proxy + aria2c ─────────────
-    # Check this BEFORE HLS/platform so CDN URLs are never sent to yt-dlp.
+    # ── Known CDN domains → proxy + aria2c, then yt-dlp fallback ─────────────
+    # Checked BEFORE HLS/platform so CDN direct links never hit yt-dlp first.
     if any(cdn in URL for cdn in CDN_REFERER_MAP):
         download_cdn_proxy()
         return

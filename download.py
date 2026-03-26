@@ -6,7 +6,7 @@ URL routing:
   tg_file: / t.me/   →  tg_handler.py  (Pyrogram bot download)
   magnet:             →  blocked (exits 1)
   *.m3u8 / platforms  →  yt-dlp + aria2c, with CDN referer auto-detection
-  everything else     →  aria2c direct download (curl pre-resolves redirects)
+  everything else     →  aria2c direct first, proxy fallback on failure
 
 Outputs:
   source.mkv          — downloaded file (always this name)
@@ -33,9 +33,9 @@ RUN_NUMBER = os.environ.get("GITHUB_RUN_NUMBER", "?")
 # CDN → Referer map  (mirrors the bash associative array)
 # ─────────────────────────────────────────────────────────────────────────────
 CDN_REFERER_MAP = {
-    "uwucdn.top":          "https://kwik.cx/",
-    "owocdn.top":          "https://kwik.cx/",
-    "kwik.cx":             "https://kwik.cx/",
+    "uwucdn.top":           "https://kwik.cx/",
+    "owocdn.top":           "https://kwik.cx/",
+    "kwik.cx":              "https://kwik.cx/",
     "vdownload.hembed.com": "https://hanime1.me/",
     "hembed.com":           "https://hanime1.me/",
 }
@@ -50,6 +50,9 @@ YTDLP_DOMAINS = (
     "kwik.cx",      # Cloudflare-protected CDN, proxied through workers
 )
 
+# CF-bypass proxy base URL
+PROXY_BASE = "https://universal-proxy.cloud-dl.workers.dev/?url="
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -62,6 +65,19 @@ def run(cmd, label=""):
     if result.returncode != 0:
         print(f"❌ {tag}command failed (exit {result.returncode})", flush=True)
         sys.exit(result.returncode)
+
+
+def run_no_exit(cmd, label=""):
+    """
+    Same as run() but returns the exit code instead of calling sys.exit().
+    Used for fallback logic — caller decides whether to retry or abort.
+    """
+    tag = f"[{label}] " if label else ""
+    print(f"{tag}▶ {' '.join(cmd)}", flush=True)
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print(f"⚠️  {tag}command failed (exit {result.returncode}) — will try fallback", flush=True)
+    return result.returncode
 
 
 def resolve_filename(url):
@@ -155,6 +171,37 @@ def notify_download_start(method, output_name):
     )
 
 
+def build_proxy_url(url):
+    """Wrap a URL through the CF-bypass proxy."""
+    return f"{PROXY_BASE}{urllib.parse.quote(url, safe='')}"
+
+
+def build_aria2c_cmd(download_url, referer=None):
+    """Return a base aria2c command list for the given URL and optional referer."""
+    cmd = [
+        "aria2c",
+        "-x", "16", "-s", "16", "-k", "1M",
+        "--user-agent=Mozilla/5.0",
+        "--console-log-level=warn",
+        "--summary-interval=10",
+        "--retry-wait=5",
+        "--max-tries=10",
+        "-o", "source.mkv",
+    ]
+    if referer:
+        cmd += [f"--header=Referer: {referer}"]
+    cmd.append(download_url)
+    return cmd
+
+
+def cleanup_partial():
+    """Remove any partial aria2c output so a retry starts clean."""
+    for leftover in ("source.mkv", "source.mkv.aria2"):
+        if os.path.exists(leftover):
+            os.remove(leftover)
+            print(f"🗑️  Removed partial file: {leftover}", flush=True)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DOWNLOAD ROUTES
 # ─────────────────────────────────────────────────────────────────────────────
@@ -176,20 +223,9 @@ def download_hls_or_platform():
     # ── kwik.cx: route through CF-bypass proxy, download with aria2c ─────────
     if "kwik.cx" in URL:
         ref = referer or "https://kwik.cx/"
-        proxied = f"https://universal-proxy.cloud-dl.workers.dev/?url={URL}"
+        proxied = build_proxy_url(URL)
         print(f"🌐 kwik.cx → proxy: {proxied}", flush=True)
-        cmd = [
-            "aria2c",
-            "-x", "16", "-s", "16", "-k", "1M",
-            "--user-agent=Mozilla/5.0",
-            "--console-log-level=warn",
-            "--summary-interval=10",
-            "--retry-wait=5",
-            "--max-tries=10",
-            f"--header=Referer: {ref}",
-            "-o", "source.mkv",
-            proxied,
-        ]
+        cmd = build_aria2c_cmd(proxied, referer=ref)
         print(f"📥 kwik.cx → proxy + aria2c  [{output_name}]", flush=True)
         run(cmd, label="aria2c")
         return
@@ -219,42 +255,54 @@ def download_hls_or_platform():
 
 
 def download_direct():
-    """Use aria2c for plain CDN/direct file URLs (curl pre-resolves redirects)."""
+    """
+    Try aria2c direct first. If it fails, clean up and retry via CF-bypass proxy.
+    curl pre-resolves redirects before either attempt.
+    """
     output_name = resolve_output_name()
     write_fname(output_name)
 
-    notify_download_start("aria2c (direct)", output_name)
-    # Pre-resolve redirects so aria2c gets the clean final URL
+    notify_download_start("aria2c (direct → proxy fallback)", output_name)
+
+    # Pre-resolve redirects so aria2c / proxy both get the clean final URL
     print("🔗 Resolving final URL...", flush=True)
     resolved = subprocess.check_output(
         [
             "curl", "-s", "-o", "/dev/null", "-w", "%{url_effective}", "-L",
-            "--globoff","--user-agent", "Mozilla/5.0", URL,
+            "--globoff", "--user-agent", "Mozilla/5.0", URL,
         ],
         text=True,
     ).strip()
     print(f"✅ Resolved: {resolved}", flush=True)
 
     referer, _ = detect_referer(URL)
-
-    cmd = [
-        "aria2c",
-        "-x", "16", "-s", "16", "-k", "1M",
-        "--user-agent=Mozilla/5.0",
-        "--console-log-level=warn",
-        "--summary-interval=10",
-        "--retry-wait=5",
-        "--max-tries=10",
-        "-o", "source.mkv",
-    ]
-
     if referer:
-        cmd += [f"--header=Referer: {referer}"]
-        print(f"🔗 Sending referer for direct download: {referer}", flush=True)
+        print(f"🔗 Referer detected: {referer}", flush=True)
 
-    cmd.append(resolved)
-    print(f"📥 Direct download → aria2c  [{output_name}]", flush=True)
-    run(cmd, label="aria2c")
+    # ── Attempt 1: direct ────────────────────────────────────────────────────
+    print(f"📥 Attempt 1/2: direct → aria2c  [{output_name}]", flush=True)
+    direct_cmd = build_aria2c_cmd(resolved, referer=referer)
+    exit_code = run_no_exit(direct_cmd, label="aria2c-direct")
+
+    if exit_code == 0:
+        print("✅ Direct download succeeded.", flush=True)
+        return
+
+    # ── Attempt 2: proxy fallback ────────────────────────────────────────────
+    print(f"🔄 Attempt 2/2: direct failed — retrying via proxy  [{output_name}]", flush=True)
+    cleanup_partial()
+
+    proxied_url = build_proxy_url(resolved)
+    print(f"🌐 Proxy URL: {proxied_url}", flush=True)
+
+    proxy_cmd = build_aria2c_cmd(proxied_url, referer=referer)
+    exit_code = run_no_exit(proxy_cmd, label="aria2c-proxy")
+
+    if exit_code != 0:
+        print("❌ Both direct and proxy attempts failed. Aborting.", flush=True)
+        sys.exit(exit_code)
+
+    print("✅ Proxy fallback download succeeded.", flush=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -289,7 +337,7 @@ def route():
         download_hls_or_platform()
         return
 
-    # ── Direct CDN / plain file URL → aria2c ─────────────────────────────────
+    # ── Direct CDN / plain file URL → direct first, proxy on failure ─────────
     download_direct()
 
 

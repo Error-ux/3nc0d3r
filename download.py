@@ -6,6 +6,7 @@ URL routing:
   tg_file: / t.me/   →  tg_handler.py  (Pyrogram bot download)
   magnet:             →  blocked (exits 1)
   *.m3u8 / platforms  →  yt-dlp + aria2c, with CDN referer auto-detection
+  CDN_REFERER_MAP     →  aria2c via CF-bypass proxy (direct, no yt-dlp)
   everything else     →  aria2c direct first, proxy fallback on failure
 
 Outputs:
@@ -30,7 +31,8 @@ CHAT_ID    = os.environ.get("TG_CHAT_ID", "").strip()
 RUN_NUMBER = os.environ.get("GITHUB_RUN_NUMBER", "?")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CDN → Referer map  (mirrors the bash associative array)
+# CDN → Referer map
+# Any domain listed here is always downloaded via CF-bypass proxy + aria2c.
 # ─────────────────────────────────────────────────────────────────────────────
 CDN_REFERER_MAP = {
     "uwucdn.top":           "https://kwik.cx/",
@@ -47,7 +49,6 @@ YTDLP_DOMAINS = (
     "vimeo.com",
     "dailymotion.com",
     "twitch.tv",
-    "kwik.cx",      # Cloudflare-protected CDN, proxied through workers
 )
 
 # CF-bypass proxy base URL
@@ -58,7 +59,7 @@ PROXY_BASE = "https://universal-proxy.cloud-dl.workers.dev/?url="
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run(cmd, label=""):
-    """Run a subprocess, stream output live, raise on non-zero exit."""
+    """Run a subprocess, stream output live, exit on failure."""
     tag = f"[{label}] " if label else ""
     print(f"{tag}▶ {' '.join(cmd)}", flush=True)
     result = subprocess.run(cmd)
@@ -84,7 +85,6 @@ def resolve_filename(url):
     """
     Best-effort human-readable filename from URL.
     Delegates to resolve_filename.py then falls back to URL basename.
-    Always returns a string ending in .mkv / .mp4 / .webm.
     """
     try:
         out = subprocess.check_output(
@@ -97,7 +97,6 @@ def resolve_filename(url):
     except Exception:
         pass
 
-    # Fallback: URL path basename, URL-decoded
     raw = urllib.parse.urlparse(url).path.split("/")[-1]
     raw = re.sub(r"\?.*", "", raw)
     return urllib.parse.unquote(raw)
@@ -212,6 +211,29 @@ def download_telegram():
     run(["python3", "tg_handler.py"], label="TG")
 
 
+def download_cdn_proxy():
+    """
+    For domains in CDN_REFERER_MAP (e.g. uwucdn.top, kwik.cx):
+    always use CF-bypass proxy + aria2c directly, no yt-dlp involved.
+    The original URL is proxied (not the curl-resolved one) since CDN
+    URLs are already final and curl may not follow auth-gated redirects.
+    """
+    output_name = resolve_output_name()
+    write_fname(output_name)
+
+    notify_download_start("aria2c (CF-proxy)", output_name)
+
+    referer, _ = detect_referer(URL)
+    ref = referer or "https://kwik.cx/"
+
+    proxied = build_proxy_url(URL)
+    print(f"🌐 CDN proxy URL: {proxied}", flush=True)
+
+    cmd = build_aria2c_cmd(proxied, referer=ref)
+    print(f"📥 CDN → proxy + aria2c  [{output_name}]", flush=True)
+    run(cmd, label="aria2c")
+
+
 def download_hls_or_platform():
     """Use yt-dlp (+ aria2c backend) for HLS streams and known platforms."""
     output_name = resolve_output_name()
@@ -220,17 +242,6 @@ def download_hls_or_platform():
     notify_download_start("yt-dlp (HLS/platform)", output_name)
     referer, ffmpeg_headers = detect_referer(URL)
 
-    # ── kwik.cx: route through CF-bypass proxy, download with aria2c ─────────
-    if "kwik.cx" in URL:
-        ref = referer or "https://kwik.cx/"
-        proxied = build_proxy_url(URL)
-        print(f"🌐 kwik.cx → proxy: {proxied}", flush=True)
-        cmd = build_aria2c_cmd(proxied, referer=ref)
-        print(f"📥 kwik.cx → proxy + aria2c  [{output_name}]", flush=True)
-        run(cmd, label="aria2c")
-        return
-
-    # ── HLS / other platforms → yt-dlp + aria2c ──────────────────────────────
     cmd = [
         "yt-dlp",
         "--add-header", "User-Agent:Mozilla/5.0",
@@ -328,6 +339,12 @@ def route():
     if "anibd.app" in URL:
         import anibd
         anibd.download(URL)
+        return
+
+    # ── Known CDN domains (CDN_REFERER_MAP) → CF-proxy + aria2c ─────────────
+    # Check this BEFORE HLS/platform so CDN URLs are never sent to yt-dlp.
+    if any(cdn in URL for cdn in CDN_REFERER_MAP):
+        download_cdn_proxy()
         return
 
     # ── HLS / known streaming platforms → yt-dlp ─────────────────────────────

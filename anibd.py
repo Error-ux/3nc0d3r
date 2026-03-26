@@ -74,7 +74,8 @@ _SEASON_ENV  = os.environ.get("SEASON",  "1").strip()
 def _fetch(url: str, headers: dict | None = None,
            binary: bool = False, as_json: bool = False):
     req = urllib.request.Request(url)
-    req.add_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    req.add_header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64)")
+    req.add_header("Accept", "*/*")
     if headers:
         for k, v in headers.items():
             req.add_header(k, v)
@@ -344,7 +345,7 @@ def _fetch_m3u8_info(link: str, post_id: str, server_api_id: int = 10,
         origin = f"{parsed.scheme}://{parsed.netloc}"
 
         for m3u8_raw in all_m3u8:
-            m3u8_url = urljoin(origin, m3u8_raw)
+            m3u8_url = urljoin(player_url, m3u8_raw)
 
             data = _fetch(m3u8_url, headers={
                 "Referer": player_url,
@@ -447,6 +448,10 @@ def download_segment(seg_url: str, seg_file: Path) -> bool:
     """Download a single segment. Skips if already complete (resume support)."""
     if seg_file.exists() and seg_file.stat().st_size > 0:
         return True
+    headers = {
+        "Referer": "https://playeng.animeapps.top/",
+        "Origin": "https://playeng.animeapps.top"
+    }
     data = _fetch(seg_url, binary=True)
     if data:
         seg_file.write_bytes(data)

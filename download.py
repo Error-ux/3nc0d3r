@@ -229,7 +229,7 @@ def download_direct():
     resolved = subprocess.check_output(
         [
             "curl", "-s", "-o", "/dev/null", "-w", "%{url_effective}", "-L",
-            "--user-agent", "Mozilla/5.0", URL,
+            "--globoff","--user-agent", "Mozilla/5.0", URL,
         ],
         text=True,
     ).strip()

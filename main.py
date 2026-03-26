@@ -153,7 +153,7 @@ async def main():
     # tonemapping converts HDR10 → SDR before denoise runs on the final pixels.
     vf_filters = []
     if crop_val: vf_filters.append(f"crop={crop_val}")
-    if res_label: vf_filters.append(f"scale=-2:{res_label}")  # -2 = width divisible by 2
+    if res_label: vf_filters.append(f"scale=-2:{res_label}:flags=lanczos")  # lanczos preserves anime line art better than bicubic
     if is_hdr:
         # HDR10 → SDR tonemap: convert to linear light, apply hable tonemap,
         # then back to bt709 for SDR display. Requires zscale + tonemap + zscale.
@@ -165,7 +165,6 @@ async def main():
             "zscale=t=bt709:m=bt709:r=tv",
             "format=yuv420p10le",
         ]
-    vf_filters.append("hqdn3d=1.5:1.2:1:3")
     video_filters = ["-vf", ",".join(vf_filters)] if vf_filters else []
 
     # Display label — show actual source height when no downscale requested
@@ -205,11 +204,11 @@ async def main():
     # tile-columns=1: Parallelizes frame processing.
     # fast-decode=1: Speeds up the internal loops without hitting quality.
     svtav1_tune = (
-        f"tune=0:film-grain={grain_val}:enable-overlays=1:"
+        f"tune=2:film-grain={grain_val}:enable-overlays=1:"
         f"aq-mode=2:variance-boost-strength=3:variance-octile=6:"
-        f"enable-qm=1:qm-min=0:qm-max=15:sharpness=1:"
-        f"scd=1:enable-tf=1:"
-        f"pin=0:lp=2:tile-columns=1:tile-rows=1:la-depth={la_depth}:"
+        f"enable-qm=1:qm-min=0:qm-max=8:sharpness=1:"
+        f"scd=1:scd-sensitivity=10:enable-tf=1:"
+        f"pin=0:lp=2:tile-columns=2:tile-rows=1:la-depth={la_depth}:"
         f"fast-decode=1"
     )
 
@@ -316,6 +315,8 @@ async def main():
         "-c:v", "libsvtav1",
         "-pix_fmt", "yuv420p10le",
         "-crf", str(final_crf),
+        # Explicit SDR color tagging — prevents players from misreading levels
+        *(["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"] if not is_hdr else []),
         "-preset", str(final_preset),
         "-svtav1-params", svtav1_tune,
         "-threads", "0",

@@ -82,6 +82,12 @@ def get_encode_ui(file_name, speed, fps, elapsed, eta, curr_sec, duration, perce
     bar = generate_progress_bar(percent)
     sys_line = f"│ 🖥️ SYSTEM: CPU {cpu:.1f}% | RAM {ram:.1f}%\n" if cpu is not None and ram is not None else ""
     demo_line = f"│ ⚡ DEMO MODE:{demo_label}\n" if demo_label else ""
+    est_final = (size / percent * 100) if percent > 1 else 0
+    size_line = (
+        f"│ 📦 SIZE: {size:.2f} MB → ~{est_final:.1f} MB est\n"
+        if percent > 1 else
+        f"│ 📦 SIZE: {size:.2f} MB\n"
+    )
     return (
         f"<code>┌─── 🛰️ [ SYSTEM.ENCODE.PROCESS ] ───┐\n"
         f"│                                    \n"
@@ -95,7 +101,7 @@ def get_encode_ui(file_name, speed, fps, elapsed, eta, curr_sec, duration, perce
         f"│ 🛠️ SETTINGS: CRF {final_crf} | Preset {final_preset}\n"
         f"│ 🎞️ VIDEO: {res_label}{crop_label} | 10-bit | {hdr_label}{grain_label}\n"
         f"│ 🔊 AUDIO: {u_audio.upper()} @ {u_bitrate}\n"
-        f"│ 📦 SIZE: {size:.2f} MB\n"
+        f"{{size_line}}"
         f"│                                    \n"
         f"{demo_line}"
         f"{sys_line}"
@@ -105,15 +111,15 @@ def get_encode_ui(file_name, speed, fps, elapsed, eta, curr_sec, duration, perce
 async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     global last_up_update
     now = time.time()
-    
+
     if now - last_up_update < 8:
         return
-        
+
     percent = (current / total) * 100
     bar = generate_progress_bar(percent)
     cur_mb = current / (1024 * 1024)
     tot_mb = total / (1024 * 1024)
-    
+
     scifi_up_ui = (
         f"<code>┌─── 🛰️ [ SYSTEM.UPLINK.ACTIVE ] ───┐\n"
         f"│                                    \n"
@@ -124,7 +130,7 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
         f"│                                    \n"
         f"└────────────────────────────────────┘</code>"
     )
-    
+
     try:
         await app.edit_message_text(chat_id, status_msg.id, scifi_up_ui, parse_mode=enums.ParseMode.HTML)
     except Exception:

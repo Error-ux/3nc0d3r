@@ -166,7 +166,7 @@ async def main():
             "format=yuv420p10le",
         ]
    # vf_filters.append("hqdn3d=1.5:1.2:1:3")
-    video_filters = ["-vf", ",".join(vf_filters)]
+    video_filters = ["-vf", ",".join(vf_filters)] if vf_filters else []
 
     # Display label — show actual source height when no downscale requested
     from rename import detect_quality
@@ -210,7 +210,7 @@ async def main():
         f"enable-qm=1:qm-min=0:qm-max=15:sharpness=1:"
         f"scd=1:enable-tf=1:tf-strength=1.0:"
         f"pin=0:lp=2:tile-columns=1:tile-rows=1:la-depth={la_depth}:"
-        f"fast-decode=1"
+        f"fast-decode=1:threads=8"
     )
 
     # UI Labels

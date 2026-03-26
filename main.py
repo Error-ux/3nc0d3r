@@ -357,10 +357,10 @@ async def main():
                     eta      = (elapsed / percent) * (100 - percent) if percent > 0 else 0
                     size_mb  = os.path.getsize(config.FILE_NAME) / (1024 * 1024) if os.path.exists(config.FILE_NAME) else 0
 
-                    milestone   = int(percent // 1) * 1
+                    milestone   = int(percent // 10) * 10
                     now         = time.time()
                     pct_crossed = milestone > last_progress_pct
-                    time_due    = now - last_update_time >= 20
+                    time_due    = now - last_update_time >= 25
 
                     scifi_ui     = get_encode_ui(
                         config.FILE_NAME, speed, fps, elapsed, eta,

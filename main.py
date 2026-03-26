@@ -165,7 +165,7 @@ async def main():
             "zscale=t=bt709:m=bt709:r=tv",
             "format=yuv420p10le",
         ]
-    vf_filters.append("atadenoise=0.05:0.05:0.3")
+   # vf_filters.append("hqdn3d=1.5:1.2:1:3")
     video_filters = ["-vf", ",".join(vf_filters)]
 
     # Display label — show actual source height when no downscale requested
@@ -208,7 +208,7 @@ async def main():
         f"tune=0:film-grain={grain_val}:enable-overlays=1:"
         f"aq-mode=2:variance-boost-strength=3:variance-octile=6:"
         f"enable-qm=1:qm-min=0:qm-max=15:sharpness=1:"
-        f"scd=1:enable-tf=1:"
+        f"scd=1:enable-tf=1:tf-strength=1.0:"
         f"pin=0:lp=2:tile-columns=1:tile-rows=1:la-depth={la_depth}:"
         f"fast-decode=1"
     )

@@ -266,7 +266,8 @@ def _fetch_episode_list(ep_id: str) -> list:
         return []
 
 # ─── M3U8 Resolver (multi-server, robust) ────────────────────────────────────
-def _get_iframe_urls(post_id: str, server_api_id: int, slug: str) -> list[str]:
+def _get_player_urls(post_id: str, server_api_id: int, slug: str) -> tuple[list[str], str | None]:
+    """Return (player_urls, episode_title) from the play page."""
     play_page = (
         f"https://anibd.app/playid/{post_id}/"
         f"?server={server_api_id}&slug={slug}"
@@ -279,24 +280,42 @@ def _get_iframe_urls(post_id: str, server_api_id: int, slug: str) -> list[str]:
         "Upgrade-Insecure-Requests": "1",
     })
     if not html:
-        return []
+        return [], None
+
+    # Scrape episode title from <h1 class="episode-title">
+    ep_title = None
+    tm = re.search(r'<h1[^>]*class=["\']episode-title["\'][^>]*>([^<]+)</h1>', html, re.IGNORECASE)
+    if tm:
+        ep_title = tm.group(1).strip()
+
+    # Collect all playeng URLs: data-src buttons first, then iframe fallback
     urls = re.findall(r'data-src=["\']([^"\']+playeng[^"\']+)["\']', html)
-    m = re.search(r'<iframe[^>]+src=["\']([^"\']+playeng[^"\']+)["\']', html)
-    if m and m.group(1) not in urls:
-        urls.insert(0, m.group(1))
-    return [u.replace("&#038;", "&").replace("&amp;", "&") for u in urls]
+    urls += re.findall(r'<iframe[^>]+src=["\']([^"\']+playeng[^"\']+)["\']', html)
+
+    seen, result = set(), []
+    for u in urls:
+        u = u.replace("&#038;", "&").replace("&amp;", "&")
+        if u not in seen:
+            seen.add(u)
+            result.append(u)
+    return result, ep_title
 
 
-def _fetch_m3u8_info(link: str, post_id: str, server_api_id: int = 10) -> dict | None:
+def _fetch_m3u8_info(link: str, post_id: str, server_api_id: int = 10,
+                     ep_num: int | None = None) -> dict | None:
     """
     Resolve the M3U8 URL and return segment list + metadata.
     Tries multiple server buttons in order (SR → SB → S3 → S4).
     Returns None if all servers fail.
     """
-    m    = re.search(r'(?:uc|ww)(\d+)$', link)
-    slug = f"{int(m.group(1)):02d}" if m else "01"
+    # Use ep_num as slug (episode number), not the server suffix from link
+    if ep_num is not None:
+        slug = f"{ep_num:02d}"
+    else:
+        m    = re.search(r'(?:uc|ww)(\d+)$', link)
+        slug = f"{int(m.group(1)):02d}" if m else "01"
 
-    player_urls = _get_iframe_urls(post_id, server_api_id, slug)
+    player_urls, ep_title = _get_player_urls(post_id, server_api_id, slug)
     if not player_urls:
         print(f"  {YL}⚠ No player URLs found on play page{R}", flush=True)
         return None
@@ -319,12 +338,17 @@ def _fetch_m3u8_info(link: str, post_id: str, server_api_id: int = 10) -> dict |
             print(f"  {YL}⚠ Server {label}: no m3u8 found in player page{R}", flush=True)
             continue
 
+        # Derive origin dynamically from the working player URL
+        from urllib.parse import urlparse
+        parsed = urlparse(player_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+
         for m3u8_raw in all_m3u8:
-            m3u8_url = urljoin(player_url, m3u8_raw)
+            m3u8_url = urljoin(origin, m3u8_raw)
 
             data = _fetch(m3u8_url, headers={
                 "Referer": player_url,
-                "Origin":  "https://playeng.animeapps.top",
+                "Origin":  origin,
             })
             if not data or not data.strip().startswith("#EXTM3U"):
                 print(f"  {YL}⚠ Server {label}: m3u8 invalid ({m3u8_url}){R}", flush=True)
@@ -340,7 +364,7 @@ def _fetch_m3u8_info(link: str, post_id: str, server_api_id: int = 10) -> dict |
                     sub_url  = urljoin(m3u8_url, sub_playlists[0])
                     sub_data = _fetch(sub_url, headers={
                         "Referer": player_url,
-                        "Origin":  "https://playeng.animeapps.top",
+                        "Origin":  origin,
                     })
                     if sub_data and sub_data.strip().startswith("#EXTM3U"):
                         data     = sub_data
@@ -362,6 +386,8 @@ def _fetch_m3u8_info(link: str, post_id: str, server_api_id: int = 10) -> dict |
 
             print(f"  {GR}✓ Server {label}: resolved M3U8 ({len(segments)} segments){R}",
                   flush=True)
+            if ep_title:
+                print(f"  {DIM}Title: {ep_title}{R}", flush=True)
             return {
                 "url":        m3u8_url,
                 "server":     label,
@@ -370,6 +396,7 @@ def _fetch_m3u8_info(link: str, post_id: str, server_api_id: int = 10) -> dict |
                 "count":      len(segments),
                 "duration":   total_dur,
                 "raw":        data,
+                "title":      ep_title,
             }
 
         print(f"  {YL}⚠ Server {label}: all m3u8 candidates failed, trying next...{R}",
@@ -645,7 +672,7 @@ def download(url: str) -> None:
 
     print("▶ Resolving M3U8...", flush=True)
     msg_id = _notify_start(tg_filename)
-    info   = _fetch_m3u8_info(link, post_id, server_api_id)
+    info   = _fetch_m3u8_info(link, post_id, server_api_id, ep_num=ep_num)
 
     if not info:
         _notify_error(msg_id, f"All servers failed for episode {ep_num}.")
@@ -755,7 +782,7 @@ def main():
     for idx in selected:
         ep   = episodes[idx - 1]
         link = ep["link"]
-        info = _fetch_m3u8_info(link, post_id, server_api_id)
+        info = _fetch_m3u8_info(link, post_id, server_api_id, ep_num=idx)
 
         if not info:
             print(f"  {RD}E{idx:02d}    All servers failed — skipping{R}")
@@ -799,7 +826,10 @@ def main():
     success = 0
     for idx, data in ep_infos.items():
         info        = data["info"]
-        filename    = f"[E{idx:02d}] {title} [1080p].mp4"
+        ep_name     = (info.get("title") or "").strip()
+        ep_label    = f" - {ep_name}" if ep_name and not ep_name.isdigit() else ""
+        filename    = f"[E{idx:02d}]{ep_label} {title} [1080p].mp4"
+        filename    = re.sub(r'[<>:"/\\|?*]', '', filename)
         output_path = out_dir / filename
 
         print(f"\n{B}━━━ Episode {idx:02d} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}")

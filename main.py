@@ -199,12 +199,18 @@ async def main():
         la_depth = 40
     print(f"[svtav1] la-depth={la_depth} (duration={duration:.0f}s)")
 
+    # -- SVT-AV1 PARAMETERS --
+    # Optimizing for 4-core GitHub Action Runners:
+    # lp=2: Better workload distribution than lp=0 on 4 cores.
+    # tile-columns=1: Parallelizes frame processing.
+    # fast-decode=1: Speeds up the internal loops without hitting quality.
     svtav1_tune = (
         f"tune=0:film-grain={grain_val}:enable-overlays=1:"
         f"aq-mode=2:variance-boost-strength=3:variance-octile=6:"
         f"enable-qm=1:qm-min=0:qm-max=15:sharpness=1:"
         f"scd=1:enable-tf=1:"
-        f"pin=0:lp=0:tile-columns=1:tile-rows=1:la-depth={la_depth}"
+        f"pin=0:lp=2:tile-columns=1:tile-rows=1:la-depth={la_depth}:"
+        f"fast-decode=1"
     )
 
     # UI Labels

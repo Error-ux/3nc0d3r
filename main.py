@@ -165,7 +165,7 @@ async def main():
             "zscale=t=bt709:m=bt709:r=tv",
             "format=yuv420p10le",
         ]
-    vf_filters.append("hqdn3d=1.5:1.2:1:3")
+    vf_filters.append("atadenoise=0.05:0.05:0.3")
     video_filters = ["-vf", ",".join(vf_filters)]
 
     # Display label — show actual source height when no downscale requested

@@ -1,4 +1,4 @@
-name: AV1 Universal Pipeline
+name: AV1 Universal Pipeline — Matrix
 run-name: "🚀 [MISSION]: ${{ inputs.ui_title || inputs.custom_name || 'Target' }}"
 
 on:
@@ -61,27 +61,31 @@ on:
       demo_duration:
         description: 'Demo Duration in seconds (leave blank for full encode)'
         default: ''
+      matrix_chunks:
+        description: 'Number of parallel chunks (2–20)'
+        default: '12'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
   actions: write
   contents: read
 
+# ═══════════════════════════════════════════════════════════════════
+# JOB 1 — DOWNLOAD
+# ═══════════════════════════════════════════════════════════════════
 jobs:
-  mission:
+  download:
     runs-on: ubuntu-latest
+    outputs:
+      file_name: ${{ steps.fname.outputs.file_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # ─────────────────────────────────────────────────────────────────────
-      # CACHE: Python library packages (pyrogram, tgcrypto, etc.)
-      # NOTE: yt-dlp is intentionally NOT in this cache — it's installed as
-      #       a standalone binary below to avoid broken-shebang issues when
-      #       a pip-installed script is restored on a fresh runner.
-      # ─────────────────────────────────────────────────────────────────────
       - name: 📦 Cache Python Packages
         id: pip-cache
         uses: actions/cache@v4
@@ -89,19 +93,13 @@ jobs:
           path: ~/.local/lib/python3.10/site-packages
           key: pip-packages-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
-      # ─────────────────────────────────────────────────────────────────────
-      # CACHE: yt-dlp standalone binary
-      # ─────────────────────────────────────────────────────────────────────
       - name: 📦 Cache yt-dlp Binary
         id: ytdlp-cache
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/yt-dlp
-          key: yt-dlp-standalone-${{ runner.os }}-${{ hashFiles('.github/workflows/encode.yml') }}
+          key: yt-dlp-standalone-${{ runner.os }}-v1
 
-      # ─────────────────────────────────────────────────────────────────────
-      # CACHE: FFmpeg binary
-      # ─────────────────────────────────────────────────────────────────────
       - name: 📦 Cache FFmpeg Binary
         id: ffmpeg-cache
         uses: actions/cache@v4
@@ -109,10 +107,6 @@ jobs:
           path: /usr/local/bin/ff*
           key: ffmpeg-master-linux64-gpl-${{ runner.os }}
 
-      # ─────────────────────────────────────────────────────────────────────
-      # CACHE: apt packages (aria2, mkvtoolnix, curl)
-      # Cached by runner OS + a fixed key. Busting the key forces a fresh install.
-      # ─────────────────────────────────────────────────────────────────────
       - name: 📦 Cache APT Packages
         id: apt-cache
         uses: actions/cache@v4
@@ -123,20 +117,13 @@ jobs:
       - name: 🛠 Install System Tools
         run: |
           if [ "${{ steps.apt-cache.outputs.cache-hit }}" = "true" ]; then
-            echo "📦 Restoring apt packages from cache..."
-            sudo cp -rn /tmp/apt-cache/usr /
-            sudo ldconfig
-            echo "✅ apt packages restored"
+            sudo cp -rn /tmp/apt-cache/usr / && sudo ldconfig
           else
-            echo "📥 Installing apt packages..."
-            # MKVToolNix from official repo — avoids libmatroska version mismatches
-            # that occur with the Ubuntu apt version (libmatroska.so.7 errors).
             sudo wget -q -O /usr/share/keyrings/gpg-pub-moritzbunkus.gpg \
               https://mkvtoolnix.download/gpg-pub-moritzbunkus.gpg
             echo "deb [signed-by=/usr/share/keyrings/gpg-pub-moritzbunkus.gpg] https://mkvtoolnix.download/ubuntu/ $(lsb_release -cs) main" \
               | sudo tee /etc/apt/sources.list.d/mkvtoolnix.list
             sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl
-            echo "💾 Saving apt packages to cache..."
             mkdir -p /tmp/apt-cache/usr
             for pkg in aria2 mkvtoolnix curl; do
               dpkg -L $pkg | while read f; do
@@ -145,43 +132,24 @@ jobs:
             done
           fi
 
-      # ─────────────────────────────────────────────────────────────────────
-      # INSTALL: yt-dlp as standalone binary (no Python path dependency)
-      # This avoids the "cannot execute: required file not found" error that
-      # occurs when a pip-installed yt-dlp script shebang points to a
-      # Python interpreter path that no longer exists on the runner.
-      # ─────────────────────────────────────────────────────────────────────
-      - name: ⬇️ Install yt-dlp Standalone Binary
+      - name: ⬇️ Install yt-dlp
         if: steps.ytdlp-cache.outputs.cache-hit != 'true'
         run: |
           curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-            -o /usr/local/bin/yt-dlp
-          chmod +x /usr/local/bin/yt-dlp
-          echo "✅ yt-dlp $(yt-dlp --version) installed"
+            -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp
 
-      - name: ✅ Verify yt-dlp (cache restore)
+      - name: ✅ Verify yt-dlp
         if: steps.ytdlp-cache.outputs.cache-hit == 'true'
-        run: |
-          chmod +x /usr/local/bin/yt-dlp
-          echo "✅ yt-dlp $(yt-dlp --version) restored from cache"
+        run: chmod +x /usr/local/bin/yt-dlp
 
-      # ─────────────────────────────────────────────────────────────────────
-      # INSTALL: Python library packages (skip if cache hit)
-      # ─────────────────────────────────────────────────────────────────────
       - name: 🐍 Install Python Packages
         run: |
           if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
-            echo "📥 Installing Python packages..."
             pip install --user -r requirements.txt pyrogram tgcrypto pycryptodomex
-          else
-            echo "📦 Python packages restored from cache."
           fi
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      # ─────────────────────────────────────────────────────────────────────
-      # INSTALL: FFmpeg (skip if cached)
-      # ─────────────────────────────────────────────────────────────────────
-      - name: ⬇️ Download FFmpeg (if not cached)
+      - name: ⬇️ Download FFmpeg
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
           wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
@@ -192,17 +160,12 @@ jobs:
       - name: 📁 Setup Session Dir
         run: mkdir -p tg_session_dir
 
-      # ─────────────────────────────────────────────────────────────────────
-      # LANE: Resolve Telegram session lane
-      # ─────────────────────────────────────────────────────────────────────
       - name: 🔀 Resolve Lane
         id: lane
         run: |
           LANES=(A B C D E F G H I J K L M N O P Q R S T)
           IDX=$(( ${{ github.run_number }} % 20 ))
-          LANE="${LANES[$IDX]}"
-          echo "name=lane-${LANE}" >> $GITHUB_OUTPUT
-          echo "Lane: lane-${LANE}"
+          echo "name=lane-${LANES[$IDX]}" >> $GITHUB_OUTPUT
 
       - name: 💾 Restore Session Cache
         uses: actions/cache@v4
@@ -213,21 +176,13 @@ jobs:
       - name: 🔑 Authorize Bot Session
         run: |
           LANE="${{ steps.lane.outputs.name }}"
-          for SESSION_FILE in \
-            "tg_session_dir/enc_session_${LANE}.session" \
-            "tg_session_dir/tg_dl_session_${LANE}.session" \
-            "tg_session_dir/enc_session.session" \
-            "tg_session_dir/tg_dl_session.session"; do
-            if [ -f "$SESSION_FILE" ]; then
-              cp "$SESSION_FILE" ./enc_session.session
-              echo "✅ Session restored: $SESSION_FILE"
-              break
-            fi
+          for F in "tg_session_dir/enc_session_${LANE}.session" \
+                   "tg_session_dir/tg_dl_session_${LANE}.session" \
+                   "tg_session_dir/enc_session.session" \
+                   "tg_session_dir/tg_dl_session.session"; do
+            if [ -f "$F" ]; then cp "$F" ./enc_session.session && break; fi
           done
 
-      # ─────────────────────────────────────────────────────────────────────
-      # STEP 1: DOWNLOAD
-      # ─────────────────────────────────────────────────────────────────────
       - name: 📥 Download
         id: download
         env:
@@ -244,10 +199,430 @@ jobs:
           YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
         run: python3 download.py 2>&1 | tee download.log
 
-      # ─────────────────────────────────────────────────────────────────────
-      # STEP 2: ENCODE
-      # ─────────────────────────────────────────────────────────────────────
-      - name: 🚀 Encode
+      - name: 📤 Export FILE_NAME
+        id: fname
+        run: |
+          FILE_NAME=$(cat tg_fname.txt 2>/dev/null || echo "${{ github.event.inputs.custom_name }}.mkv")
+          echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
+          echo "$FILE_NAME" > tg_fname.txt
+
+      - name: 💾 Save & Cache Bot Session
+        if: always()
+        run: |
+          LANE="${{ steps.lane.outputs.name }}"
+          [ -f "enc_session.session" ] && \
+            cp enc_session.session "tg_session_dir/enc_session_${LANE}.session"
+
+      - name: 🗃 Cache Bot Session
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}
+
+      - name: 📤 Upload Source
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-video
+          path: |
+            source.mkv
+            tg_fname.txt
+          retention-days: 1
+
+# ═══════════════════════════════════════════════════════════════════
+# JOB 2 — SPLIT
+# Slices source into N chunks.
+# Sends one TG message per chunk + one master message via
+# matrix_progress.py init, captures all message IDs as outputs.
+# ═══════════════════════════════════════════════════════════════════
+  split:
+    needs: download
+    runs-on: ubuntu-latest
+    outputs:
+      matrix_json: ${{ steps.set-matrix.outputs.matrix_json }}
+      master_id:   ${{ steps.tg-init.outputs.master_id }}
+      chunk_ids:   ${{ steps.tg-init.outputs.chunk_ids }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 📦 Cache Python Packages
+        id: pip-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/lib/python3.10/site-packages
+          key: pip-packages-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: 🐍 Install Python Packages
+        run: |
+          if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
+            pip install --user -r requirements.txt pyrogram tgcrypto pycryptodomex
+          fi
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: 📦 Cache apt (Jellyfin FFmpeg)
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-jellyfin-ffmpeg7-${{ runner.os }}
+
+      - name: 🛠 Install Jellyfin FFmpeg
+        run: |
+          curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
+          echo "deb [arch=amd64] https://repo.jellyfin.org/ubuntu noble main" \
+            | sudo tee /etc/apt/sources.list.d/jellyfin.list
+          sudo apt-get update && sudo apt-get install -y jellyfin-ffmpeg7
+          echo "/usr/lib/jellyfin-ffmpeg" >> $GITHUB_PATH
+
+      - name: 📥 Download Source
+        uses: actions/download-artifact@v4
+        with:
+          name: source-video
+
+      - name: ✂️ Slice into chunks
+        run: |
+          N="${{ github.event.inputs.matrix_chunks }}"
+          N="${N:-12}"
+          [ "$N" -lt 2 ]  && N=2
+          [ "$N" -gt 20 ] && N=20
+
+          DURATION=$(ffprobe -v error \
+            -analyzeduration 100M -probesize 100M \
+            -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 source.mkv)
+
+          CHUNK=$(echo "scale=3; $DURATION / $N" | bc)
+          echo "Duration: ${DURATION}s — $N chunks × ${CHUNK}s each"
+
+          ffmpeg \
+            -analyzeduration 100M -probesize 100M \
+            -i source.mkv \
+            -map 0:v -map 0:a \
+            -c copy \
+            -segment_time "$CHUNK" \
+            -f segment \
+            -segment_format matroska \
+            "part_%02d.mkv"
+
+          ls -lh part_*.mkv
+
+      - id: set-matrix
+        run: |
+          FILES=$(ls part_*.mkv | jq -R -s -c 'split("\n")[:-1]')
+          echo "matrix_json=$FILES" >> $GITHUB_OUTPUT
+
+      # ── Send TG placeholder messages (one per chunk + master) ────────────
+      # matrix_progress.py init prints JSON: {"master_id":X,"chunk_ids":[...]}
+      - name: 📡 Init TG Progress Messages
+        id: tg-init
+        env:
+          API_ID: ${{ secrets.TG_API_ID }}
+          API_HASH: ${{ secrets.TG_API_HASH }}
+          BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          SESSION_NAME: "enc_session"
+        run: |
+          FILE_NAME=$(cat tg_fname.txt 2>/dev/null || echo "${{ github.event.inputs.custom_name }}.mkv")
+          N="${{ github.event.inputs.matrix_chunks }}"
+          N="${N:-12}"
+
+          # Run init — last line of stdout is the JSON we need
+          JSON_OUT=$(python3 matrix_progress.py init "$N" "$FILE_NAME" 2>/dev/null | tail -1)
+          echo "TG init output: $JSON_OUT"
+
+          MASTER_ID=$(echo "$JSON_OUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['master_id'])")
+          CHUNK_IDS=$(echo "$JSON_OUT" | python3 -c "import sys,json; print(','.join(str(x) for x in json.load(sys.stdin)['chunk_ids']))")
+
+          echo "master_id=$MASTER_ID" >> $GITHUB_OUTPUT
+          echo "chunk_ids=$CHUNK_IDS" >> $GITHUB_OUTPUT
+          echo "master_id=$MASTER_ID  chunk_ids=$CHUNK_IDS"
+
+      - name: 📤 Upload Chunks
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-chunks
+          path: part_*.mkv
+          retention-days: 1
+
+# ═══════════════════════════════════════════════════════════════════
+# JOB 3 — ENCODE-PARTS (MATRIX)
+# Each runner encodes one chunk and edits its own dedicated TG message
+# with live progress — pure bash curl, no Python, no race conditions.
+# ═══════════════════════════════════════════════════════════════════
+  encode-parts:
+    needs: split
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ${{ fromJson(needs.split.outputs.matrix_json) }}
+    steps:
+      - name: 📦 Cache apt (Jellyfin FFmpeg)
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-jellyfin-ffmpeg7-${{ runner.os }}
+
+      - name: 🛠 Install Jellyfin FFmpeg
+        run: |
+          curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
+          echo "deb [arch=amd64] https://repo.jellyfin.org/ubuntu noble main" \
+            | sudo tee /etc/apt/sources.list.d/jellyfin.list
+          sudo apt-get update && sudo apt-get install -y jellyfin-ffmpeg7
+          echo "/usr/lib/jellyfin-ffmpeg" >> $GITHUB_PATH
+
+      - name: 📥 Download Chunk
+        uses: actions/download-artifact@v4
+        with:
+          name: raw-chunks
+
+      - name: 📥 Download tg_fname.txt
+        uses: actions/download-artifact@v4
+        with:
+          name: source-video
+          # only need the txt file; source.mkv not needed here
+        continue-on-error: true
+
+      - name: 🚀 Encode Chunk + Push TG Progress
+        env:
+          BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
+        run: |
+          PART="${{ matrix.part }}"
+          OUTNAME="${PART%.mkv}-encoded.mkv"
+          FILE_NAME=$(cat tg_fname.txt 2>/dev/null || echo "video.mkv")
+
+          CRF="${{ github.event.inputs.custom_crf }}";     CRF="${CRF:-48}"
+          PRESET="${{ github.event.inputs.custom_preset }}"; PRESET="${PRESET:-6}"
+          GRAIN="${{ github.event.inputs.film_grain }}";   GRAIN="${GRAIN:-0}"
+          AUDIO_BITRATE="${{ github.event.inputs.audio_bitrate }}"; AUDIO_BITRATE="${AUDIO_BITRATE:-48k}"
+          AUDIO_MODE="${{ github.event.inputs.audio_mode }}"; AUDIO_MODE="${AUDIO_MODE:-opus}"
+          N_CHUNKS="${{ github.event.inputs.matrix_chunks }}"; N_CHUNKS="${N_CHUNKS:-12}"
+
+          # Derive chunk index from filename (part_00 → 0)
+          CHUNK_IDX=$(echo "$PART" | grep -oP '\d+' | head -1 | sed 's/^0*//' )
+          CHUNK_IDX="${CHUNK_IDX:-0}"
+
+          # Pick this chunk's dedicated TG message ID from the comma-separated list
+          CHUNK_IDS="${{ needs.split.outputs.chunk_ids }}"
+          MSG_ID=$(echo "$CHUNK_IDS" | tr ',' '\n' | sed -n "$((CHUNK_IDX + 1))p")
+          echo "Chunk $CHUNK_IDX → message_id=$MSG_ID"
+
+          # SVT-AV1 params (mirrors main.py)
+          SVT_PARAMS="tune=2:enable-overlays=1:tile-columns=2:tile-rows=1:aq-mode=2:variance-boost-strength=3:variance-octile=6:enable-qm=1:qm-min=0:qm-max=8:sharpness=1:scd=1:scd-sensitivity=10:enable-tf=1:pin=0:lp=2:la-depth=32:fast-decode=1"
+          if [ "$GRAIN" -gt 0 ] 2>/dev/null; then
+            SVT_PARAMS="tune=2:film-grain=${GRAIN}:film-grain-denoise=0:enable-overlays=1:tile-columns=2:tile-rows=1:aq-mode=2:variance-boost-strength=3:variance-octile=6:enable-qm=1:qm-min=0:qm-max=8:sharpness=1:scd=1:scd-sensitivity=10:enable-tf=1:pin=0:lp=2:la-depth=32:fast-decode=1"
+          fi
+
+          # Audio codec
+          case "$AUDIO_MODE" in
+            aac)  AUDIO_CODEC="-c:a aac" ;;
+            copy) AUDIO_CODEC="-c:a copy" ;;
+            *)    AUDIO_CODEC="-c:a libopus" ;;
+          esac
+
+          # Get chunk duration for progress math
+          DURATION=$(ffprobe -v error \
+            -analyzeduration 100M -probesize 100M \
+            -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 "$PART")
+
+          START_TIME=$(date +%s)
+          LAST_TG_UPDATE=0
+
+          # Helper: edit TG message for this chunk
+          tg_update() {
+            local PCT="$1" SPEED="$2" ETA="$3" SIZE="$4"
+            # Build progress bar (10 blocks)
+            local FILLED=$(echo "scale=0; $PCT * 10 / 100" | bc 2>/dev/null || echo 0)
+            local EMPTY=$((10 - FILLED))
+            local BAR=$(printf '▰%.0s' $(seq 1 $FILLED 2>/dev/null) ; printf '▱%.0s' $(seq 1 $EMPTY 2>/dev/null))
+            local TEXT
+            TEXT=$(printf '<code>CHUNK:%02d/%s PROG:%s %.1f%% SPEED:%.1fx ETA:%s SIZE:%s</code>' \
+              "$CHUNK_IDX" "$N_CHUNKS" "$BAR" "$PCT" "$SPEED" "$ETA" "$SIZE")
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
+              -H "Content-Type: application/json" \
+              -d "{\"chat_id\":\"${CHAT_ID}\",\"message_id\":${MSG_ID},\"text\":\"${TEXT}\",\"parse_mode\":\"HTML\"}" \
+              > /dev/null 2>&1 || true
+          }
+
+          # Run ffmpeg, parse -progress pipe:1 output line by line
+          ffmpeg \
+            -analyzeduration 100M -probesize 100M \
+            -i "$PART" \
+            -map 0:v:0 -map 0:a? \
+            -c:v libsvtav1 \
+            -pix_fmt yuv420p10le \
+            -crf "$CRF" \
+            -preset "$PRESET" \
+            -svtav1-params "$SVT_PARAMS" \
+            -threads 2 \
+            $AUDIO_CODEC -b:a "$AUDIO_BITRATE" \
+            -progress pipe:1 \
+            -nostats \
+            -y "$OUTNAME" 2>/dev/null | \
+          while IFS= read -r LINE; do
+            if [[ "$LINE" == out_time_ms=* ]]; then
+              OUT_MS="${LINE#out_time_ms=}"
+              NOW=$(date +%s)
+              ELAPSED=$(( NOW - START_TIME ))
+
+              if [ "$ELAPSED" -gt 0 ] && [ "$OUT_MS" -gt 0 ]; then
+                # Calculate progress
+                CURR_SEC=$(echo "scale=2; $OUT_MS / 1000000" | bc 2>/dev/null || echo 0)
+                PCT=$(echo "scale=1; $CURR_SEC * 100 / $DURATION" | bc 2>/dev/null || echo 0)
+                SPEED=$(echo "scale=2; $CURR_SEC / $ELAPSED" | bc 2>/dev/null || echo 0)
+                REMAINING=$(echo "scale=0; ($DURATION - $CURR_SEC) / ($SPEED + 0.001)" | bc 2>/dev/null || echo 0)
+                ETA=$(printf '%02d:%02d:%02d' \
+                  $(( REMAINING / 3600 )) \
+                  $(( (REMAINING % 3600) / 60 )) \
+                  $(( REMAINING % 60 )))
+                SIZE=$(du -sh "$OUTNAME" 2>/dev/null | cut -f1 || echo "?")
+
+                # Push TG update every 20 seconds
+                if [ $(( NOW - LAST_TG_UPDATE )) -ge 20 ]; then
+                  tg_update "$PCT" "$SPEED" "$ETA" "$SIZE"
+                  LAST_TG_UPDATE=$NOW
+                fi
+              fi
+            fi
+          done
+
+          # Push 100% done message when encode finishes
+          SIZE=$(du -sh "$OUTNAME" 2>/dev/null | cut -f1 || echo "?")
+          tg_update "100" "done" "00:00:00" "$SIZE"
+
+          echo "✅ Encoded: $(ls -lh "$OUTNAME")"
+
+      - name: 📤 Upload Encoded Chunk
+        uses: actions/upload-artifact@v4
+        with:
+          name: encoded-${{ strategy.job-index }}
+          path: "*-encoded.mkv"
+          retention-days: 1
+
+# ═══════════════════════════════════════════════════════════════════
+# JOB 4 — MERGE AND FINISH
+# Merges encoded chunks, then runs main.py with SKIP_ENCODE=1.
+# main.py's matrix_progress_poller reads all chunk TG messages,
+# aggregates progress, and edits the master message.
+# After that, normal post-processing: mkvmerge remux, VMAF,
+# thumbnail, rename, Telegram upload.
+# ═══════════════════════════════════════════════════════════════════
+  merge-and-finish:
+    needs: [download, split, encode-parts]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 📦 Cache Python Packages
+        id: pip-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/lib/python3.10/site-packages
+          key: pip-packages-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: 📦 Cache FFmpeg Binary
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/ff*
+          key: ffmpeg-master-linux64-gpl-${{ runner.os }}
+
+      - name: 📦 Cache APT Packages
+        id: apt-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/apt-cache
+          key: apt-packages-${{ runner.os }}-aria2-mkvtoolnix-curl-v1
+
+      - name: 🛠 Install System Tools
+        run: |
+          if [ "${{ steps.apt-cache.outputs.cache-hit }}" = "true" ]; then
+            sudo cp -rn /tmp/apt-cache/usr / && sudo ldconfig
+          else
+            sudo wget -q -O /usr/share/keyrings/gpg-pub-moritzbunkus.gpg \
+              https://mkvtoolnix.download/gpg-pub-moritzbunkus.gpg
+            echo "deb [signed-by=/usr/share/keyrings/gpg-pub-moritzbunkus.gpg] https://mkvtoolnix.download/ubuntu/ $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/mkvtoolnix.list
+            sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl
+          fi
+
+      - name: 🐍 Install Python Packages
+        run: |
+          if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
+            pip install --user -r requirements.txt pyrogram tgcrypto pycryptodomex
+          fi
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: ⬇️ Download FFmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: |
+          wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
+          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
+          rm -rf ffmpeg-master-latest-linux64-gpl*
+
+      - name: 📥 Download Source (for mkvmerge remux)
+        uses: actions/download-artifact@v4
+        with:
+          name: source-video
+
+      - name: 📥 Download All Encoded Chunks
+        uses: actions/download-artifact@v4
+        with:
+          path: encoded-parts
+          pattern: encoded-*
+          merge-multiple: true
+
+      - name: 🔗 Merge Encoded Chunks
+        run: |
+          FILE_NAME=$(cat tg_fname.txt 2>/dev/null || echo "${{ github.event.inputs.custom_name }}.mkv")
+          find encoded-parts -name "*-encoded.mkv" | sort | \
+            sed "s/^/file '/;s/$/'/" > concat_list.txt
+          echo "=== Merge order ===" && cat concat_list.txt
+          ffmpeg -f concat -safe 0 -i concat_list.txt -c copy "merged_encoded.mkv"
+          mv merged_encoded.mkv "$FILE_NAME"
+          echo "✅ Merged → $FILE_NAME ($(du -sh "$FILE_NAME" | cut -f1))"
+
+      - name: 📁 Setup Session Dir
+        run: mkdir -p tg_session_dir
+
+      - name: 🔀 Resolve Lane
+        id: lane
+        run: |
+          LANES=(A B C D E F G H I J K L M N O P Q R S T)
+          IDX=$(( ${{ github.run_number }} % 20 ))
+          echo "name=lane-${LANES[$IDX]}" >> $GITHUB_OUTPUT
+
+      - name: 💾 Restore Session Cache
+        uses: actions/cache@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}
+
+      - name: 🔑 Authorize Bot Session
+        run: |
+          LANE="${{ steps.lane.outputs.name }}"
+          for F in "tg_session_dir/enc_session_${LANE}.session" \
+                   "tg_session_dir/tg_dl_session_${LANE}.session" \
+                   "tg_session_dir/enc_session.session" \
+                   "tg_session_dir/tg_dl_session.session"; do
+            if [ -f "$F" ]; then cp "$F" ./enc_session.session && break; fi
+          done
+
+      # ── Post-processing via main.py ───────────────────────────────────────
+      # SKIP_ENCODE=1      → skip ffmpeg, go straight to post-processing
+      # MATRIX_MASTER_ID   → master TG message to update with aggregated %
+      # MATRIX_CHUNK_IDS   → comma-separated chunk message IDs to read from
+      - name: 🎛 Post-Process (Remux / VMAF / Rename / Upload)
         id: encode
         env:
           API_ID: ${{ secrets.TG_API_ID }}
@@ -280,40 +655,34 @@ jobs:
           ANIDB_USER: ${{ secrets.ANIDB_USER }}
           ANIDB_PASS: ${{ secrets.ANIDB_PASS }}
           TRACEMOE_API_KEY: ${{ secrets.TRACEMOE_API_KEY }}
+          # ── Matrix integration ───────────────────────────────────────────
+          SKIP_ENCODE: "1"
+          MATRIX_MASTER_ID: ${{ needs.split.outputs.master_id }}
+          MATRIX_CHUNK_IDS: ${{ needs.split.outputs.chunk_ids }}
         run: |
           set -eo pipefail
-          # FILE_NAME resolved from tg_fname.txt (written by download step)
-          # Falls back to custom_name input if tg_fname.txt is missing
           FILE_NAME=$(cat tg_fname.txt 2>/dev/null || echo "${{ github.event.inputs.custom_name }}.mkv")
           export FILE_NAME
-          echo "🎬 Encoding: $FILE_NAME"
+          echo "🎬 Post-processing: $FILE_NAME"
           python3 main.py 2>&1 | tee encode.log
 
-      # ─────────────────────────────────────────────────────────────────────
-      # STEP 3: NOTIFY FAILURE (runs only if any step above failed)
-      # ─────────────────────────────────────────────────────────────────────
       - name: 🚨 Notify Failure
         if: failure()
         env:
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+          DOWNLOAD_OUTCOME: ${{ steps.encode.outcome }}
           ENCODE_OUTCOME: ${{ steps.encode.outcome }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           UI_TITLE: ${{ github.event.inputs.ui_title || 'Unknown' }}
         run: python3 notify_failure.py
 
-      # ─────────────────────────────────────────────────────────────────────
-      # CACHE SESSION (always, even on failure)
-      # ─────────────────────────────────────────────────────────────────────
-      - name: 💾 Save Bot Session
+      - name: 💾 Save & Cache Bot Session
         if: always()
         run: |
           LANE="${{ steps.lane.outputs.name }}"
-          if [ -f "enc_session.session" ]; then
+          [ -f "enc_session.session" ] && \
             cp enc_session.session "tg_session_dir/enc_session_${LANE}.session"
-            echo "✅ Bot session saved: enc_session_${LANE}.session"
-          fi
 
       - name: 🗃 Cache Bot Session
         if: always()

@@ -206,12 +206,14 @@ jobs:
           echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
           echo "$FILE_NAME" > tg_fname.txt
 
-      - name: 💾 Save & Cache Bot Session
+      - name: 💾 Save Bot Session
         if: always()
         run: |
           LANE="${{ steps.lane.outputs.name }}"
-          [ -f "enc_session.session" ] && \
+          if [ -f "enc_session.session" ]; then
             cp enc_session.session "tg_session_dir/enc_session_${LANE}.session"
+            echo "✅ Bot session saved: enc_session_${LANE}.session"
+          fi
 
       - name: 🗃 Cache Bot Session
         if: always()
@@ -677,12 +679,14 @@ jobs:
           UI_TITLE: ${{ github.event.inputs.ui_title || 'Unknown' }}
         run: python3 notify_failure.py
 
-      - name: 💾 Save & Cache Bot Session
+      - name: 💾 Save Bot Session
         if: always()
         run: |
           LANE="${{ steps.lane.outputs.name }}"
-          [ -f "enc_session.session" ] && \
+          if [ -f "enc_session.session" ]; then
             cp enc_session.session "tg_session_dir/enc_session_${LANE}.session"
+            echo "✅ Bot session saved: enc_session_${LANE}.session"
+          fi
 
       - name: 🗃 Cache Bot Session
         if: always()

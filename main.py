@@ -14,6 +14,7 @@ from rename import lang_code_to_name
 from ui import get_encode_ui, format_time, upload_progress, get_cancelled_ui, get_vmaf_ui
 from rename import resolve_output_name, format_track_report
 from tg_utils import connect_telegram, tg_edit, tg_notify_failure, ALL_LANES, _resolve_lane, _resolve_session_names
+from matrix_progress import matrix_progress_poller
 
 
 # ---------------------------------------------------------------------------
@@ -60,12 +61,14 @@ async def main():
         if (source_size * 2.1) > free:
             print(f"DISK WARNING: {source_size/(1024**3):.2f}GB source might exceed {free/(1024**3):.2f}GB free space.")
 
+    # Detect matrix path early — used throughout to adjust behaviour
+    SKIP_ENCODE = os.getenv("SKIP_ENCODE") == "1"
+
     # 2. METADATA EXTRACTION
     try:
         duration, width, height, is_hdr, total_frames, channels, fps_val = get_video_info()
     except Exception as e:
         print(f"Metadata error: {e}")
-        # TG not up yet — spin up a minimal client just to fire the alert
         _tg_s: dict = {}
         _tg_r = asyncio.Event()
         await connect_telegram(_tg_s, _tg_r, config.FILE_NAME)
@@ -140,7 +143,7 @@ async def main():
 
     # 4. PARAMETER CONFIGURATION
     # CRF and preset come directly from bridge inputs — no auto-selection.
-    # Bridge always sends explicit values (defaults: CRF 50, Preset 8).
+    # Bridge always sends explicit values (defaults: CRF 48, Preset 6).
     final_crf    = config.USER_CRF    if (config.USER_CRF    and config.USER_CRF.strip())    else "48"
     final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else "6"
 
@@ -148,7 +151,7 @@ async def main():
     crop_val  = get_crop_params(duration)
 
     # -- VIDEO FILTERS --
-    # Correct filter order: crop → scale → tonemap (HDR only) → hqdn3d.
+    # Correct filter order: crop → scale → tonemap (HDR only).
     # Crop removes unwanted pixels first, scale resizes only what's kept,
     # tonemapping converts HDR10 → SDR before denoise runs on the final pixels.
     vf_filters = []
@@ -188,7 +191,7 @@ async def main():
         grain_val = 0
 
     # -- DYNAMIC LA-DEPTH --
-    # Scale lookahead to content length. la-depth=60 is the original safe default.
+    # Scale lookahead to content length. la-depth=60 is the safe default.
     # Only bump up for short content where extra lookahead won't cause timeouts.
     if duration < 300:       # < 5 min  — shorts, OPs, EDs, demos
         la_depth = 90
@@ -198,11 +201,6 @@ async def main():
         la_depth = 40
     print(f"[svtav1] la-depth={la_depth} (duration={duration:.0f}s)")
 
-    # -- SVT-AV1 PARAMETERS --
-    # Optimizing for 4-core GitHub Action Runners:
-    # lp=2: Better workload distribution than lp=0 on 4 cores.
-    # tile-columns=1: Parallelizes frame processing.
-    # fast-decode=1: Speeds up the internal loops without hitting quality.
     svtav1_tune = (
         f"tune=2:film-grain={grain_val}:enable-overlays=1:"
         f"aq-mode=2:variance-boost-strength=3:variance-octile=6:"
@@ -211,7 +209,6 @@ async def main():
         f"pin=0:lp=2:tile-columns=2:tile-rows=1:la-depth={la_depth}:"
         f"fast-decode=1"
     )
-
 
     # UI Labels
     hdr_label      = "HDR10" if is_hdr else "SDR"
@@ -226,7 +223,6 @@ async def main():
     demo_duration = config.DEMO_DURATION.strip() if demo_mode else None
 
     if demo_mode:
-        # Convert demo_start and demo_duration to seconds for progress math.
         def _hms_to_sec(val: str) -> float:
             parts = val.split(":")
             if len(parts) == 3:
@@ -235,15 +231,13 @@ async def main():
 
         demo_start_sec    = _hms_to_sec(demo_start)
         demo_duration_sec = _hms_to_sec(demo_duration)
-        # Clamp so we don't exceed the source
         demo_duration_sec = min(demo_duration_sec, duration - demo_start_sec)
-        # Override duration so progress % is calculated against the slice only
-        duration   = demo_duration_sec
+        duration          = demo_duration_sec
         print(f"[DEMO MODE] Encoding {demo_duration_sec:.0f}s from {demo_start_sec:.0f}s")
 
     demo_label = f" | ⚡ DEMO {demo_duration}s" if demo_mode else ""
 
-    # 4. LAUNCH TG AUTH AS A BACKGROUND TASK — encoding starts immediately.
+    # 5. LAUNCH TG AUTH AS A BACKGROUND TASK — encoding starts immediately.
     # If FloodWait fires, connect_telegram sleeps it out on its own while
     # FFmpeg keeps running. Progress messages are sent the instant TG is ready.
     tg_state = {}
@@ -251,11 +245,8 @@ async def main():
     tg_task  = asyncio.create_task(
         connect_telegram(tg_state, tg_ready, config.FILE_NAME)
     )
-    tg_connect_start = time.time()   # record when we started waiting for TG
+    tg_connect_start = time.time()
 
-    # Build action buttons once — shown on every progress edit during encoding.
-    # Button 1: URL → opens GitHub Actions log directly (no callback needed).
-    # Button 2: kill_{run_id} → bridge Worker cancels the run.
     _gh_repo = os.getenv("GITHUB_REPOSITORY", "")
     _run_id  = config.GITHUB_RUN_ID
     _log_url = f"https://github.com/{_gh_repo}/actions/runs/{_run_id}"
@@ -264,12 +255,9 @@ async def main():
         InlineKeyboardButton("🛑 Terminate", callback_data=f"kill_{_run_id}"),
     ]])
 
-    # 5. ENCODING EXECUTION (starts immediately, does not wait for TG)
-
     # -- PGS SUBTITLE REMOVAL --
     # PGS (hdmv_pgs_bitmap / pgssub) are bitmap image subtitles — large and
     # uneditable. Strip all of them from the output.
-
     def _is_pgs(codec: str) -> bool:
         return "pgs" in codec.lower()
 
@@ -289,12 +277,11 @@ async def main():
         print(f"[encode] {len(pgs_exclusions)//2} PGS track(s) stripped")
 
     # -- SUBTITLE TITLE RENAME --
-    # Set each kept native (non-PGS) subtitle track's title to its language name.
     sub_title_meta: list[str] = []
     out_sub_idx = 0
     for st in sub_tracks:
         if _is_pgs(st.get("codec", "")):
-            continue   # all PGS removed — either stripped or replaced by ASS via ocr_meta
+            continue
         lang_name = lang_code_to_name(st["lang"])
         sub_title_meta += [f"-metadata:s:s:{out_sub_idx}", f"title={lang_name}"]
         print(f"[encode] Subtitle #s:{out_sub_idx} title set to '{lang_name}' (lang: {st['lang']})")
@@ -302,112 +289,178 @@ async def main():
 
     cmd = [
         "ffmpeg",
-        # Input-side seeking (fast; placed BEFORE -i)
         *([ "-ss", demo_start, "-t", demo_duration ] if demo_mode else []),
         "-i", config.SOURCE,
-        *ocr_inputs,              # -i pgs_track_N.srt for each OCR'd PGS track
+        *ocr_inputs,
         "-map", "0:v:0",
         "-map", "0:a?",
         "-map", "0:s?",
-        *pgs_exclusions,          # exclude original PGS streams
-        *ocr_maps,                # map OCR'd SRT inputs as subtitle streams
+        *pgs_exclusions,
+        *ocr_maps,
         *video_filters,
         "-c:v", "libsvtav1",
         "-pix_fmt", "yuv420p10le",
         "-crf", str(final_crf),
-        # Explicit SDR color tagging — prevents players from misreading levels
         *(["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"] if not is_hdr else []),
         "-preset", str(final_preset),
         "-svtav1-params", svtav1_tune,
         "-threads", "0",
         *audio_cmd,
-        *sub_title_meta,          # rename native subtitle titles
-        *ocr_meta,                # rename OCR'd subtitle titles (e.g. "Japanese (Signs)")
-        "-c:s", "copy",           # OCR SRT tracks are already text — copy is fine
+        *sub_title_meta,
+        *ocr_meta,
+        "-c:s", "copy",
         "-map_chapters", "0",
         "-progress", "pipe:1",
         "-nostats",
         "-y", config.FILE_NAME
     ]
 
-    # asyncio subprocess so TG auth task can make progress on the same loop
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
+    # =========================================================================
+    # 6. ENCODE — normal single-job path OR matrix pre-encoded path
+    # =========================================================================
 
-    # Start resource monitor alongside encoding
-    monitor_stop  = asyncio.Event()
-    monitor_stats = {}
-    monitor_task  = asyncio.create_task(resource_monitor(monitor_stop, monitor_stats))
+    if not SKIP_ENCODE:
+        # ── NORMAL PATH: run ffmpeg, stream progress to TG ───────────────────
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
 
-    start_time        = time.time()
-    last_progress_pct = -1
-    last_update_time  = 0
-    last_ui_text      = None   # latest snapshot; pushed to TG when it connects mid-encode
+        monitor_stop  = asyncio.Event()
+        monitor_stats = {}
+        monitor_task  = asyncio.create_task(resource_monitor(monitor_stop, monitor_stats))
 
-    with open(config.LOG_FILE, "w") as f_log:
-        async for raw_line in process.stdout:
-            line = raw_line.decode("utf-8", errors="replace")
-            f_log.write(line)
-            # Cancel is handled externally: the bridge Worker cancels the GitHub
-            # run via API (kill_{run_id}), which terminates this process directly.
-            # config.CANCELLED is never set — the check below is removed.
+        start_time        = time.time()
+        last_progress_pct = -1
+        last_update_time  = 0
+        last_ui_text      = None
 
-            if "out_time_ms" in line:
-                try:
-                    curr_sec = int(line.split("=")[1]) / 1_000_000
-                    percent  = (curr_sec / duration) * 100
-                    elapsed  = time.time() - start_time
-                    speed    = curr_sec / elapsed if elapsed > 0 else 0
-                    fps      = (percent / 100 * total_frames) / elapsed if elapsed > 0 else 0
-                    eta      = (elapsed / percent) * (100 - percent) if percent > 0 else 0
-                    size_mb  = os.path.getsize(config.FILE_NAME) / (1024 * 1024) if os.path.exists(config.FILE_NAME) else 0
+        with open(config.LOG_FILE, "w") as f_log:
+            async for raw_line in process.stdout:
+                line = raw_line.decode("utf-8", errors="replace")
+                f_log.write(line)
 
-                    milestone   = int(percent // 10) * 10
-                    now         = time.time()
-                    pct_crossed = milestone > last_progress_pct
-                    time_due    = now - last_update_time >= 25
+                if "out_time_ms" in line:
+                    try:
+                        curr_sec = int(line.split("=")[1]) / 1_000_000
+                        percent  = (curr_sec / duration) * 100
+                        elapsed  = time.time() - start_time
+                        speed    = curr_sec / elapsed if elapsed > 0 else 0
+                        fps      = (percent / 100 * total_frames) / elapsed if elapsed > 0 else 0
+                        eta      = (elapsed / percent) * (100 - percent) if percent > 0 else 0
+                        size_mb  = os.path.getsize(config.FILE_NAME) / (1024 * 1024) if os.path.exists(config.FILE_NAME) else 0
 
-                    scifi_ui     = get_encode_ui(
-                        config.FILE_NAME, speed, fps, elapsed, eta,
-                        curr_sec, duration, percent,
-                        final_crf, final_preset, res_label,
-                        crop_label_txt, hdr_label, grain_label,
-                        config.AUDIO_MODE, final_audio_bitrate, size_mb,
-                        cpu=monitor_stats.get("sys_cpu"),
-                        ram=monitor_stats.get("sys_ram"),
-                        demo_label=demo_label,
+                        milestone   = int(percent // 10) * 10
+                        now         = time.time()
+                        pct_crossed = milestone > last_progress_pct
+                        time_due    = now - last_update_time >= 25
+
+                        scifi_ui = get_encode_ui(
+                            config.FILE_NAME, speed, fps, elapsed, eta,
+                            curr_sec, duration, percent,
+                            final_crf, final_preset, res_label,
+                            crop_label_txt, hdr_label, grain_label,
+                            config.AUDIO_MODE, final_audio_bitrate, size_mb,
+                            cpu=monitor_stats.get("sys_cpu"),
+                            ram=monitor_stats.get("sys_ram"),
+                            demo_label=demo_label,
+                        )
+                        last_ui_text = scifi_ui
+
+                        if pct_crossed or time_due:
+                            last_progress_pct = milestone
+                            last_update_time  = now
+                            await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
+
+                    except Exception:
+                        continue
+
+        await process.wait()
+        monitor_stop.set()
+        await monitor_task
+        total_mission_time = time.time() - start_time
+
+    else:
+        # ── MATRIX PATH: chunks already encoded and merged ───────────────────
+        # The merge-and-finish job placed the final encoded file at
+        # config.FILE_NAME before running this script. We skip ffmpeg entirely
+        # and run the matrix progress poller briefly to push the final
+        # aggregated chunk state to the master TG message.
+
+        print(f"[SKIP_ENCODE] Matrix pre-encode detected. File: {config.FILE_NAME}")
+
+        if not os.path.exists(config.FILE_NAME):
+            raise FileNotFoundError(
+                f"SKIP_ENCODE=1 but output file not found: {config.FILE_NAME}. "
+                f"The merge-and-finish job must place it here before calling main.py."
+            )
+
+        matrix_master_id     = int(os.getenv("MATRIX_MASTER_ID", "0") or "0")
+        matrix_chunk_ids_raw = os.getenv("MATRIX_CHUNK_IDS", "")
+
+        if matrix_master_id and matrix_chunk_ids_raw:
+            try:
+                matrix_chunk_ids = [
+                    int(x) for x in matrix_chunk_ids_raw.split(",") if x.strip()
+                ]
+                print(
+                    f"[SKIP_ENCODE] Polling {len(matrix_chunk_ids)} chunk messages, "
+                    f"master_id={matrix_master_id}"
+                )
+                # Wait for TG to be ready so the poller can edit the master message
+                await asyncio.wait_for(tg_ready.wait(), timeout=120)
+
+                poll_stop = asyncio.Event()
+                poll_task = asyncio.create_task(
+                    matrix_progress_poller(
+                        master_id    = matrix_master_id,
+                        chunk_ids    = matrix_chunk_ids,
+                        file_name    = config.FILE_NAME,
+                        final_crf    = final_crf,
+                        final_preset = final_preset,
+                        stop_event   = poll_stop,
                     )
-                    last_ui_text = scifi_ui   # always keep the freshest snapshot
+                )
+                # One full poll cycle to push the final 100% state of all chunks
+                # before we move into post-processing messages
+                await asyncio.sleep(15)
+                poll_stop.set()
+                await poll_task
 
-                    if pct_crossed or time_due:
-                        last_progress_pct = milestone
-                        last_update_time  = now
-                        # Only sends if TG is already ready; otherwise silently buffered
-                        await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
+            except asyncio.TimeoutError:
+                print("[SKIP_ENCODE] TG not ready after 120s — skipping poller.")
+            except Exception as e:
+                print(f"[SKIP_ENCODE] Progress poller error (non-fatal): {e}")
+        else:
+            print("[SKIP_ENCODE] MATRIX_MASTER_ID or MATRIX_CHUNK_IDS not set — skipping poller.")
 
-                except Exception:
-                    continue
+        # Signal TG that we are entering post-processing
+        await tg_edit(
+            tg_state, tg_ready,
+            "<b>[ MATRIX.MERGE COMPLETE ] Finalizing output...</b>",
+            reply_markup=encode_buttons,
+        )
 
-    await process.wait()
-    monitor_stop.set()
-    await monitor_task
-    total_mission_time = time.time() - start_time
+        # Encode time is distributed across parallel runners — not tracked here
+        total_mission_time = 0
+        # Stub so the returncode check below passes cleanly
+        process    = type("_Proc", (), {"returncode": 0})()
+        last_ui_text = None
 
-    # If TG is still waiting out a FloodWait, block here until it connects.
-    # Encoding is done so we have all the time we need.
+    # =========================================================================
+    # Wait for TG before post-processing
+    # =========================================================================
     if not tg_ready.is_set():
         print("Encode finished. Waiting for Telegram to become available...")
         try:
-            await asyncio.wait_for(tg_ready.wait(), timeout=7200)  # max 2 hours
+            await asyncio.wait_for(tg_ready.wait(), timeout=7200)
         except asyncio.TimeoutError:
             print("Telegram never connected within 2 hours. Exiting without upload.")
             tg_task.cancel()
             return
 
-    await tg_task   # ensure connect_telegram fully finished
+    await tg_task
 
     app    = tg_state.get("app")
     status = tg_state.get("status")
@@ -420,10 +473,11 @@ async def main():
 
     try:
         # Push the last progress frame in case TG connected after encoding ended
+        # (only relevant for the normal single-job path)
         if last_ui_text:
             await tg_edit(tg_state, tg_ready, last_ui_text, reply_markup=encode_buttons)
 
-        # 6. ERROR HANDLING
+        # 7. ERROR HANDLING
         if process.returncode != 0:
             error_snippet = (
                 "".join(open(config.LOG_FILE).readlines()[-10:])
@@ -433,7 +487,10 @@ async def main():
             await tg_notify_failure(tg_state, tg_ready, config.FILE_NAME, error_snippet)
             return
 
-        # 7. POST-PROCESSING (Remux)
+        # 8. POST-PROCESSING (Remux)
+        # mkvmerge pulls chapters and attachments back from source.mkv into the
+        # encoded output. In the matrix path, source.mkv is the original download
+        # artifact — downloaded onto the merge-and-finish runner before main.py runs.
         await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>")
         fixed_file = f"FIXED_{config.FILE_NAME}"
         mkvmerge_title_args = ["--title", config.ENCODER_TITLE] if config.ENCODER_TITLE.strip() else []
@@ -444,17 +501,15 @@ async def main():
             "--no-video", "--no-audio", "--no-subtitles", "--no-attachments", config.SOURCE
         ], capture_output=True, text=True)
         if mkvmerge_result.returncode != 0:
-            # mkvmerge failed (e.g. missing libmatroska) — log and skip remux.
-            # The encoded file is still valid; continue without chapter/attachment merge.
             print(f"[mkvmerge] WARNING: remux failed (exit {mkvmerge_result.returncode}): "
                   f"{mkvmerge_result.stderr.strip()[-200:]}")
             if os.path.exists(fixed_file):
-                os.remove(fixed_file)  # partial output
+                os.remove(fixed_file)
         elif os.path.exists(fixed_file):
             os.remove(config.FILE_NAME)
             os.rename(fixed_file, config.FILE_NAME)
 
-        # 8. METRICS + CLOUD UPLOAD (concurrent)
+        # 9. METRICS + CLOUD UPLOAD (concurrent)
         final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
 
         grid_task = asyncio.create_task(async_generate_thumbnail(duration, config.FILE_NAME))
@@ -477,7 +532,7 @@ async def main():
         await grid_task
         cloud = await cloud_task if cloud_task else {"direct": None, "page": None, "source": "disabled"}
 
-        # 9. Build inline buttons from cloud result
+        # 10. Build inline buttons from cloud result
         btn_row = []
         if cloud["source"] == "gofile":
             if cloud.get("page"):
@@ -488,14 +543,13 @@ async def main():
             btn_row.append(InlineKeyboardButton("Litterbox", url=cloud["direct"]))
         buttons = InlineKeyboardMarkup([btn_row]) if btn_row else None
 
-        # 10. FINAL UPLINK
+        # 11. FINAL UPLINK
         if final_size > 2000:
             await tg_edit(
                 tg_state, tg_ready,
                 "<b>[ SIZE OVERFLOW ]</b> File too large for Telegram. Cloud link below.",
                 reply_markup=buttons,
             )
-            # Cleanup even on overflow — runner disk is finite
             for _f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT,
                        "anibd_source.txt", *ocr_srt_files]:
                 if os.path.exists(_f):
@@ -508,7 +562,6 @@ async def main():
         crop_label_report = " | Cropped" if crop_val else ""
         track_report = format_track_report(audio_tracks, sub_tracks)
 
-        # Append user-supplied track label notes if provided
         user_track_notes = ""
         if config.SUB_TRACKS and config.SUB_TRACKS.strip():
             user_track_notes += f"\n🔤 <b>SUB LABELS:</b>  <code>{config.SUB_TRACKS}</code>"
@@ -525,6 +578,13 @@ async def main():
             f"⚡ <b>DEMO MODE:</b> <code>{demo_duration}s from {demo_start}</code>\n"
             if demo_mode else ""
         )
+        # Matrix path: note parallel encode in the final report
+        n_chunks = len(matrix_chunk_ids_raw.split(",")) if SKIP_ENCODE and matrix_chunk_ids_raw else 0
+        matrix_report_line = (
+            f"🧩 <b>MATRIX:</b> <code>{n_chunks} parallel chunks</code>\n"
+            if SKIP_ENCODE and n_chunks else ""
+        )
+
         report = (
             f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
             f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
@@ -538,6 +598,7 @@ async def main():
             f"└ Audio: {audio_mode_line}\n"
             f"{content_line}"
             f"{demo_report_line}"
+            f"{matrix_report_line}"
             f"\n{track_report}"
             f"{user_track_notes}"
         )
@@ -569,7 +630,7 @@ async def main():
         import traceback
         tb = traceback.format_exc()
         print(f"[FATAL] Unexpected error: {exc}\n{tb}")
-        elapsed_total = time.time() - start_time
+        elapsed_total = time.time() - tg_connect_start
         reason = (
             f"Unexpected error after {format_time(elapsed_total)}:\n"
             f"{type(exc).__name__}: {exc}\n\n"

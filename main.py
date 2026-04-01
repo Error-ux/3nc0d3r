@@ -76,15 +76,28 @@ async def main():
             await _a.stop()
         return
 
+    # 2b. AUTO-DOWNSCALE — cap sources above 1080p to 1080p when no explicit
+    # resolution was requested. This prevents enormous 4K encodes on runners
+    # with limited disk.  USER_RES overrides this entirely (user is explicit).
+    _source_height   = height          # keep original for display label
+    _auto_downscaled = False
+    if not (config.USER_RES and config.USER_RES.strip().isdigit()) and height > 1080:
+        config.USER_RES  = "1080"
+        _auto_downscaled = True
+        print(f"[auto-scale] Source is {height}p — exceeds 1080p, capping to 1080p")
+
     # 3. RENAME — build structured output filename if ANIME_NAME is set.
     # If ANIME_NAME is blank, attempt to auto-parse it from the source URL's
     # filename= query param (or path) using anitopy as a fallback.
     # Skip entirely for anibd.app downloads — filename is already final.
     anime_name = config.ANIME_NAME.strip() if config.ANIME_NAME else ""
     is_special = False
-    _anibd_source = os.path.exists("anibd_source.txt")
+    _managed_source = (
+        os.path.exists("anibd_source.txt") or
+        os.path.exists("iwara_source.txt")
+    )
 
-    if not anime_name and not _anibd_source:
+    if not anime_name and not _managed_source:
         # ── Auto-detect from filename (anitopy) ────────────────────────────
         # Priority: FILE_NAME (Content-Disposition) → VIDEO_URL query param → URL path
         from urllib.parse import urlparse, parse_qs, unquote
@@ -167,9 +180,13 @@ async def main():
         ]
     video_filters = ["-vf", ",".join(vf_filters)] if vf_filters else []
 
-    # Display label — show actual source height when no downscale requested
+    # Display label — show actual source height when no downscale requested.
+    # When auto-downscaled show both output and original (e.g. "1080p (↓4K)").
     from rename import detect_quality
-    res_label = res_label or f"Original({detect_quality(height)})"
+    if _auto_downscaled:
+        res_label = f"1080p (↓{detect_quality(_source_height)})"
+    else:
+        res_label = res_label or f"Original({detect_quality(height)})"
 
     # -- AUDIO CONFIGURATION --
     # Always re-encode to Opus at the configured bitrate.
@@ -497,7 +514,7 @@ async def main():
             )
             # Cleanup even on overflow — runner disk is finite
             for _f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT,
-                       "anibd_source.txt", *ocr_srt_files]:
+                       "anibd_source.txt", "iwara_source.txt", *ocr_srt_files]:
                 if os.path.exists(_f):
                     try: os.remove(_f)
                     except: pass
@@ -562,7 +579,7 @@ async def main():
         try: await status.delete()
         except: pass
         for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT,
-                   "anibd_source.txt", *ocr_srt_files]:
+                   "anibd_source.txt", "iwara_source.txt", *ocr_srt_files]:
             if os.path.exists(f): os.remove(f)
 
     except Exception as exc:

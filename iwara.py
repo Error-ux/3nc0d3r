@@ -41,14 +41,13 @@ import urllib.request
 # ─── Configuration ────────────────────────────────────────────────────────────
 CHUNK_SIZE     = 65536   # 64 KB chunks for pipeline speed
 TIMEOUT        = 20
-
+_IWARA_SECRET  = "mSvL05GfEmeEmsEYfGCnVpEjYgTJraJN"
 # ─── Env ──────────────────────────────────────────────────────────────────────
 BOT_TOKEN     = os.environ.get("TG_BOT_TOKEN",        "").strip()
 CHAT_ID       = os.environ.get("TG_CHAT_ID",          "").strip()
 RUN_NUMBER    = os.environ.get("GITHUB_RUN_NUMBER",   "?")
 IWARA_TOKEN   = os.environ.get("IWARA_TOKEN",         "").strip()
 IWARA_QUALITY = os.environ.get("IWARA_QUALITY",       "").strip()
-_IWARA_SECRET  = os.environ.get("_IWARA_SECRET",         "").strip()
 # ─── ANSI (CLI only) ──────────────────────────────────────────────────────────
 R   = "\033[0m";  B  = "\033[1m";  DIM = "\033[2m"
 CY  = "\033[96m"; GR = "\033[92m"; YL  = "\033[93m"; RD = "\033[91m"

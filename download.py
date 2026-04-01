@@ -282,6 +282,12 @@ def route():
         anibd.download(URL)
         return
 
+    # ── iwara.tv / iwara.ai → iwara.py ───────────────────────────────────────
+    if "iwara.tv" in URL or "iwara.ai" in URL:
+        import iwara
+        iwara.download(URL)
+        return
+
     # ── HLS / known streaming platforms → yt-dlp ─────────────────────────────
     is_hls      = "m3u8" in URL
     is_platform = any(d in URL for d in YTDLP_DOMAINS)

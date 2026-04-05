@@ -242,6 +242,7 @@ jobs:
           CUSTOM: ${{ github.event.inputs.custom_name }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
+          IWARA_SECRET: ${{ secrets.IWARA_SECRET }}
         run: python3 download.py 2>&1 | tee download.log
 
       # ─────────────────────────────────────────────────────────────────────

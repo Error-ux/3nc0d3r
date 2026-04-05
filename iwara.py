@@ -41,7 +41,7 @@ import urllib.request
 # ─── Configuration ────────────────────────────────────────────────────────────
 CHUNK_SIZE     = 65536   # 64 KB chunks for pipeline speed
 TIMEOUT        = 20
-_IWARA_SECRET  = "mSvL05GfEmeEmsEYfGCnVpEjYgTJraJN"
+_IWARA_SECRET  = os.environ.get("IWARA_SECRET", "")
 # ─── Env ──────────────────────────────────────────────────────────────────────
 BOT_TOKEN     = os.environ.get("TG_BOT_TOKEN",        "").strip()
 CHAT_ID       = os.environ.get("TG_CHAT_ID",          "").strip()

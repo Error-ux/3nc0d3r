@@ -20,7 +20,7 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const keepRuns = 50;
+            const keepRuns = 1;
 
             console.log(`Keeping latest ${keepRuns} runs per workflow`);
 

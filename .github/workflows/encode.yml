@@ -61,6 +61,9 @@ on:
       demo_duration:
         description: 'Demo Duration in seconds (leave blank for full encode)'
         default: ''
+      encoder_title:
+        description: 'MKV Title Tag Branding'
+        default: "zub'sEncodes"
 
 
 permissions:
@@ -97,7 +100,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/yt-dlp
-          key: yt-dlp-standalone-${{ runner.os }}-latest-v1
+          key: yt-dlp-standalone-${{ runner.os }}-latest
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE: FFmpeg binary
@@ -219,10 +222,9 @@ jobs:
             "tg_session_dir/enc_session.session" \
             "tg_session_dir/tg_dl_session.session"; do
             if [ -f "$SESSION_FILE" ]; then
-              cp "$SESSION_FILE" ./enc_session.session
-              mkdir -p tg_session_dir
               cp "$SESSION_FILE" "tg_session_dir/enc_session_${LANE}.session"
-              echo "✅ Session restored: $SESSION_FILE"
+              cp "$SESSION_FILE" ./enc_session.session
+              echo "✅ Session restored: $SESSION_FILE → lane ${LANE}"
               break
             fi
           done
@@ -271,6 +273,7 @@ jobs:
           AUDIO_TRACKS: ${{ github.event.inputs.audio_tracks }}
           DEMO_START: ${{ github.event.inputs.demo_start }}
           DEMO_DURATION: ${{ github.event.inputs.demo_duration }}
+          ENCODER_TITLE: ${{ github.event.inputs.encoder_title }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
         run: |
           set -eo pipefail

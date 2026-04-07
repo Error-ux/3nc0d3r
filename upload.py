@@ -10,15 +10,14 @@ import subprocess
 import time
 import traceback
 
-from pyrogram import Client, enums
-from pyrogram.errors import FloodWait
+from pyrogram import enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
 from media import async_generate_thumbnail, get_vmaf, upload_to_cloud
 from rename import format_track_report
 from ui import format_time, upload_progress
-from tg_utils import connect_telegram, tg_edit, tg_notify_failure, ALL_LANES, _resolve_lane, _resolve_session_names
+from tg_utils import connect_telegram, tg_edit, tg_notify_failure
 import ui as _ui
 
 

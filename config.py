@@ -51,6 +51,3 @@ AUDIO_TRACKS = os.getenv("AUDIO_TRACKS", "")       # e.g. "Japanese, English (Du
 # Leave DEMO_DURATION blank (or unset) to encode the full file as normal.
 DEMO_START    = os.getenv("DEMO_START",    "0")   # seconds or HH:MM:SS
 DEMO_DURATION = os.getenv("DEMO_DURATION", "")    # seconds; blank = full encode
-
-# ---------- GLOBAL STATE ----------
-CANCELLED = False

@@ -4,16 +4,15 @@ import subprocess
 import time
 import shutil
 import psutil
-from pyrogram import Client, enums
-from pyrogram.errors import FloodWait
+from pyrogram import enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
 from media import get_video_info, get_crop_params, async_generate_thumbnail, get_vmaf, upload_to_cloud
 from rename import lang_code_to_name
-from ui import get_encode_ui, format_time, upload_progress, get_cancelled_ui, get_vmaf_ui
+from ui import get_encode_ui, format_time, upload_progress, get_vmaf_ui
 from rename import resolve_output_name, format_track_report
-from tg_utils import connect_telegram, tg_edit, tg_notify_failure, ALL_LANES, _resolve_lane, _resolve_session_names
+from tg_utils import connect_telegram, tg_edit, tg_notify_failure
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +61,7 @@ async def main():
 
     # 2. METADATA EXTRACTION
     try:
-        duration, width, height, is_hdr, total_frames, channels, fps_val = get_video_info()
+        duration, width, height, is_hdr, total_frames, _, fps_val = get_video_info()
     except Exception as e:
         print(f"Metadata error: {e}")
         # TG not up yet — spin up a minimal client just to fire the alert
@@ -291,10 +290,6 @@ async def main():
         return "pgs" in codec.lower()
 
     pgs_exclusions: list[str] = []
-    ocr_inputs:     list[str] = []
-    ocr_maps:       list[str] = []
-    ocr_meta:       list[str] = []
-    ocr_srt_files:  list[str] = []
 
     for sub_idx, st in enumerate(sub_tracks):
         if not _is_pgs(st.get("codec", "")):
@@ -322,12 +317,10 @@ async def main():
         # Input-side seeking (fast; placed BEFORE -i)
         *([ "-ss", demo_start, "-t", demo_duration ] if demo_mode else []),
         "-i", config.SOURCE,
-        *ocr_inputs,              # -i pgs_track_N.srt for each OCR'd PGS track
         "-map", "0:v:0",
         "-map", "0:a?",
         "-map", "0:s?",
         *pgs_exclusions,          # exclude original PGS streams
-        *ocr_maps,                # map OCR'd SRT inputs as subtitle streams
         *video_filters,
         "-c:v", "libsvtav1",
         "-pix_fmt", "yuv420p10le",
@@ -339,8 +332,7 @@ async def main():
         "-threads", "0",
         *audio_cmd,
         *sub_title_meta,          # rename native subtitle titles
-        *ocr_meta,                # rename OCR'd subtitle titles (e.g. "Japanese (Signs)")
-        "-c:s", "copy",           # OCR SRT tracks are already text — copy is fine
+        "-c:s", "copy",
         "-map_chapters", "0",
         "-progress", "pipe:1",
         "-nostats",
@@ -499,8 +491,6 @@ async def main():
         if cloud["source"] == "gofile":
             if cloud.get("page"):
                 btn_row.append(InlineKeyboardButton("Gofile", url=cloud["page"]))
-            if cloud.get("direct"):
-                btn_row.append(InlineKeyboardButton("Direct", url=cloud["direct"]))
         elif cloud["source"] == "litterbox" and cloud.get("direct"):
             btn_row.append(InlineKeyboardButton("Litterbox", url=cloud["direct"]))
         buttons = InlineKeyboardMarkup([btn_row]) if btn_row else None
@@ -514,7 +504,7 @@ async def main():
             )
             # Cleanup even on overflow — runner disk is finite
             for _f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT,
-                       "anibd_source.txt", "iwara_source.txt", *ocr_srt_files]:
+                       "anibd_source.txt", "iwara_source.txt"]:
                 if os.path.exists(_f):
                     try: os.remove(_f)
                     except: pass
@@ -579,7 +569,7 @@ async def main():
         try: await status.delete()
         except: pass
         for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT,
-                   "anibd_source.txt", "iwara_source.txt", *ocr_srt_files]:
+                   "anibd_source.txt", "iwara_source.txt"]:
             if os.path.exists(f): os.remove(f)
 
     except Exception as exc:

@@ -26,16 +26,6 @@ def get_vmaf_ui(percent, speed, eta):
         f"└────────────────────────────────────┘</code>"
     )
 
-def get_download_fail_ui(error_msg):
-    return (
-        f"<code>┌─── ❌ [ DOWNLOAD.MISSION.FAILED ] ───┐\n"
-        f"│                                    \n"
-        f"│ ❌ ERROR: {error_msg}\n"
-        f"│ 🛠️ STATUS: Downlink Terminated.    \n"
-        f"│                                    \n"
-        f"└────────────────────────────────────┘</code>"
-    )
-
 def get_failure_ui(file_name, error_snippet, phase="ENCODE"):
     phase_icons = {"DOWNLOAD": "📥", "ENCODE": "⚙️", "UPLOAD": "☁️"}
     icon = phase_icons.get(phase.upper(), "❌")
@@ -52,17 +42,6 @@ def get_failure_ui(file_name, error_snippet, phase="ENCODE"):
         f"└────────────────────────────────────┘</code>"
     )
 
-
-def get_cancelled_ui(file_name, elapsed_str):
-    return (
-        f"<code>┌─── 🛑 [ MISSION.CANCELLED ] ───────┐\n"
-        f"│                                    \n"
-        f"│ 📂 FILE: {file_name}\n"
-        f"│ ⏱ ELAPSED: {elapsed_str}\n"
-        f"│                                    \n"
-        f"│ 🚫 STATUS: Encode aborted by user. \n"
-        f"└────────────────────────────────────┘</code>"
-    )
 
 def get_download_ui(percent, speed, size_mb, elapsed, eta):
     bar = generate_progress_bar(percent)

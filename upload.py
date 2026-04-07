@@ -11,6 +11,7 @@ import time
 import traceback
 
 from pyrogram import enums
+from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
@@ -121,8 +122,6 @@ async def main():
         if cloud["source"] == "gofile":
             if cloud.get("page"):
                 btn_row.append(InlineKeyboardButton("Gofile", url=cloud["page"]))
-            if cloud.get("direct"):
-                btn_row.append(InlineKeyboardButton("Direct", url=cloud["direct"]))
         elif cloud["source"] == "litterbox" and cloud.get("direct"):
             btn_row.append(InlineKeyboardButton("Litterbox", url=cloud["direct"]))
         buttons = InlineKeyboardMarkup([btn_row]) if btn_row else None

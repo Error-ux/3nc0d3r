@@ -306,7 +306,7 @@ async def main():
     out_sub_idx = 0
     for st in sub_tracks:
         if _is_pgs(st.get("codec", "")):
-            continue   # all PGS removed — either stripped or replaced by ASS via ocr_meta
+            continue   # PGS removed via pgs_exclusions
         lang_name = lang_code_to_name(st["lang"])
         sub_title_meta += [f"-metadata:s:s:{out_sub_idx}", f"title={lang_name}"]
         print(f"[encode] Subtitle #s:{out_sub_idx} title set to '{lang_name}' (lang: {st['lang']})")
@@ -320,7 +320,7 @@ async def main():
         "-map", "0:v:0",
         "-map", "0:a?",
         "-map", "0:s?",
-        *pgs_exclusions,          # exclude original PGS streams
+        *pgs_exclusions,          # exclude PGS bitmap subtitle streams
         *video_filters,
         "-c:v", "libsvtav1",
         "-pix_fmt", "yuv420p10le",

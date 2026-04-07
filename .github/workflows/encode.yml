@@ -97,7 +97,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/yt-dlp
-          key: yt-dlp-standalone-${{ runner.os }}-${{ hashFiles('.github/workflows/encode.yml') }}
+          key: yt-dlp-standalone-${{ runner.os }}-latest-v1
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE: FFmpeg binary
@@ -172,7 +172,7 @@ jobs:
         run: |
           if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
             echo "📥 Installing Python packages..."
-            pip install --user -r requirements.txt pyrogram tgcrypto pycryptodomex
+            pip install --user -r requirements.txt
           else
             echo "📦 Python packages restored from cache."
           fi
@@ -220,6 +220,8 @@ jobs:
             "tg_session_dir/tg_dl_session.session"; do
             if [ -f "$SESSION_FILE" ]; then
               cp "$SESSION_FILE" ./enc_session.session
+              mkdir -p tg_session_dir
+              cp "$SESSION_FILE" "tg_session_dir/enc_session_${LANE}.session"
               echo "✅ Session restored: $SESSION_FILE"
               break
             fi
@@ -235,13 +237,9 @@ jobs:
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
-          CF_KV_TOKEN: ${{ secrets.CF_KV_TOKEN }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
           CUSTOM: ${{ github.event.inputs.custom_name }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
-          YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
         run: python3 download.py 2>&1 | tee download.log
 
       # ─────────────────────────────────────────────────────────────────────
@@ -254,9 +252,6 @@ jobs:
           API_HASH: ${{ secrets.TG_API_HASH }}
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
-          CF_KV_TOKEN: ${{ secrets.CF_KV_TOKEN }}
           SESSION_NAME: "enc_session"
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           USER_RES: ${{ github.event.inputs.res_choice }}
@@ -277,9 +272,6 @@ jobs:
           DEMO_START: ${{ github.event.inputs.demo_start }}
           DEMO_DURATION: ${{ github.event.inputs.demo_duration }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
-          ANIDB_USER: ${{ secrets.ANIDB_USER }}
-          ANIDB_PASS: ${{ secrets.ANIDB_PASS }}
-          TRACEMOE_API_KEY: ${{ secrets.TRACEMOE_API_KEY }}
         run: |
           set -eo pipefail
           # FILE_NAME resolved from tg_fname.txt (written by download step)

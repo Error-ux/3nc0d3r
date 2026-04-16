@@ -1,4 +1,4 @@
-name: AV1 Universal Pipeline
+name: AV1 Matrix
 
 run-name: "🚀 [MATRIX]: ${{ inputs.ui_title || inputs.custom_name || inputs.anime_name || 'Target' }}"
 

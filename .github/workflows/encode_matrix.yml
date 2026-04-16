@@ -386,7 +386,7 @@ jobs:
           [ -n "${{ github.event.inputs.res_choice }}" ] && \
             EXTRA_ARGS="$EXTRA_ARGS --res ${{ github.event.inputs.res_choice }}"
 
-          python3 encode.py "$PART" \
+          python3 main.py "$PART" \
             --crf     "${{ github.event.inputs.custom_crf }}" \
             --preset  "${{ github.event.inputs.custom_preset }}" \
             --grain   "$GRAIN" \

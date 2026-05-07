@@ -1,0 +1,318 @@
+name: AV1 Universal Pipeline
+run-name: "🚀 [MISSION]: ${{ inputs.ui_title || inputs.custom_name || 'Target' }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ui_title:
+        description: 'Dashboard Title'
+      video_url:
+        description: 'Link (TG, M3U8, or Direct CDN)'
+        required: true
+      custom_name:
+        description: 'Output Filename'
+      res_choice:
+        description: 'Resolution'
+      custom_crf:
+        description: 'CRF'
+        default: '48'
+      custom_preset:
+        description: 'Preset'
+        default: '6'
+      film_grain:
+        description: 'Grain'
+        default: '0'
+      audio_mode:
+        description: 'Audio Mode'
+        default: 'opus'
+      audio_bitrate:
+        description: 'Audio Bitrate'
+        default: '48k'
+      run_vmaf:
+        description: 'Run VMAF?'
+        default: 'true'
+      run_upload:
+        description: 'Upload to Gofile?'
+        default: 'false'
+      anime_name:
+        description: 'Anime Name (leave blank to skip rename)'
+        default: ''
+      season:
+        description: 'Season Number'
+        default: '1'
+      episode:
+        description: 'Episode Number'
+        default: '1'
+      audio_type:
+        description: 'Audio Type Override (Auto/Sub/Dual/Tri/Multi)'
+        default: 'Auto'
+      content_type:
+        description: 'Content Type (Anime/Donghua/Hentai/HMV/AMV/custom)'
+        default: 'Anime'
+      sub_tracks:
+        description: 'Subtitle Track Labels'
+        default: ''
+      audio_tracks:
+        description: 'Audio Track Labels'
+        default: ''
+      demo_start:
+        description: 'Demo Start (seconds or HH:MM:SS)'
+        default: '0'
+      demo_duration:
+        description: 'Demo Duration in seconds (leave blank for full encode)'
+        default: ''
+      encoder_title:
+        description: 'MKV Title Tag Branding'
+        default: "zub'sEncodes"
+
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  mission:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # ─────────────────────────────────────────────────────────────────────
+      # CACHE: Python library packages (pyrogram, tgcrypto, etc.)
+      # NOTE: yt-dlp is intentionally NOT in this cache — it's installed as
+      #       a standalone binary below to avoid broken-shebang issues when
+      #       a pip-installed script is restored on a fresh runner.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: 📦 Cache Python Packages
+        id: pip-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/lib/python3.10/site-packages
+          key: pip-packages-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      # ─────────────────────────────────────────────────────────────────────
+      # CACHE: yt-dlp standalone binary
+      # ─────────────────────────────────────────────────────────────────────
+      - name: 📦 Cache yt-dlp Binary
+        id: ytdlp-cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/yt-dlp
+          key: yt-dlp-standalone-${{ runner.os }}-latest
+
+      # ─────────────────────────────────────────────────────────────────────
+      # CACHE: FFmpeg binary
+      # ─────────────────────────────────────────────────────────────────────
+      - name: 📦 Cache FFmpeg Binary
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/ff*
+          key: ffmpeg-master-linux64-gpl-${{ runner.os }}
+
+      # ─────────────────────────────────────────────────────────────────────
+      # CACHE: apt packages (aria2, mkvtoolnix, curl)
+      # Cached by runner OS + a fixed key. Busting the key forces a fresh install.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: 📦 Cache APT Packages
+        id: apt-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/apt-cache
+          key: apt-packages-${{ runner.os }}-aria2-mkvtoolnix-curl-v1
+
+      - name: 🛠 Install System Tools
+        run: |
+          if [ "${{ steps.apt-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "📦 Restoring apt packages from cache..."
+            sudo cp -rn /tmp/apt-cache/usr /
+            sudo ldconfig
+            echo "✅ apt packages restored"
+          else
+            echo "📥 Installing apt packages..."
+            # MKVToolNix from official repo — avoids libmatroska version mismatches
+            # that occur with the Ubuntu apt version (libmatroska.so.7 errors).
+            sudo wget -q -O /usr/share/keyrings/gpg-pub-moritzbunkus.gpg \
+              https://mkvtoolnix.download/gpg-pub-moritzbunkus.gpg
+            echo "deb [signed-by=/usr/share/keyrings/gpg-pub-moritzbunkus.gpg] https://mkvtoolnix.download/ubuntu/ $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/mkvtoolnix.list
+            sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl
+            echo "💾 Saving apt packages to cache..."
+            mkdir -p /tmp/apt-cache/usr
+            for pkg in aria2 mkvtoolnix curl; do
+              dpkg -L $pkg | while read f; do
+                [ -f "$f" ] && sudo cp --parents "$f" /tmp/apt-cache/ 2>/dev/null || true
+              done
+            done
+          fi
+
+      # ─────────────────────────────────────────────────────────────────────
+      # INSTALL: yt-dlp as standalone binary (no Python path dependency)
+      # This avoids the "cannot execute: required file not found" error that
+      # occurs when a pip-installed yt-dlp script shebang points to a
+      # Python interpreter path that no longer exists on the runner.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: ⬇️ Install yt-dlp Standalone Binary
+        if: steps.ytdlp-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+            -o /usr/local/bin/yt-dlp
+          chmod +x /usr/local/bin/yt-dlp
+          echo "✅ yt-dlp $(yt-dlp --version) installed"
+
+      - name: ✅ Verify yt-dlp (cache restore)
+        if: steps.ytdlp-cache.outputs.cache-hit == 'true'
+        run: |
+          chmod +x /usr/local/bin/yt-dlp
+          echo "✅ yt-dlp $(yt-dlp --version) restored from cache"
+
+      # ─────────────────────────────────────────────────────────────────────
+      # INSTALL: Python library packages (skip if cache hit)
+      # ─────────────────────────────────────────────────────────────────────
+      - name: 🐍 Install Python Packages
+        run: |
+          if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
+            echo "📥 Installing Python packages..."
+            pip install --user -r requirements.txt
+          else
+            echo "📦 Python packages restored from cache."
+          fi
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      # ─────────────────────────────────────────────────────────────────────
+      # INSTALL: FFmpeg (skip if cached)
+      # ─────────────────────────────────────────────────────────────────────
+      - name: ⬇️ Download FFmpeg (if not cached)
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: |
+          wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
+          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
+          rm -rf ffmpeg-master-latest-linux64-gpl*
+
+      - name: 📁 Setup Session Dir
+        run: mkdir -p tg_session_dir
+
+      # ─────────────────────────────────────────────────────────────────────
+      # LANE: Resolve Telegram session lane
+      # ─────────────────────────────────────────────────────────────────────
+      - name: 🔀 Resolve Lane
+        id: lane
+        run: |
+          LANES=(A B C D E F G H I J K L M N O P Q R S T)
+          IDX=$(( ${{ github.run_number }} % 20 ))
+          LANE="${LANES[$IDX]}"
+          echo "name=lane-${LANE}" >> $GITHUB_OUTPUT
+          echo "Lane: lane-${LANE}"
+
+      - name: 💾 Restore Session Cache
+        uses: actions/cache@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}
+
+      - name: 🔑 Authorize Bot Session
+        run: |
+          LANE="${{ steps.lane.outputs.name }}"
+          for SESSION_FILE in \
+            "tg_session_dir/enc_session_${LANE}.session" \
+            "tg_session_dir/tg_dl_session_${LANE}.session" \
+            "tg_session_dir/enc_session.session" \
+            "tg_session_dir/tg_dl_session.session"; do
+            if [ -f "$SESSION_FILE" ]; then
+              cp "$SESSION_FILE" "tg_session_dir/enc_session_${LANE}.session"
+              cp "$SESSION_FILE" ./enc_session.session
+              echo "✅ Session restored: $SESSION_FILE → lane ${LANE}"
+              break
+            fi
+          done
+
+      # ─────────────────────────────────────────────────────────────────────
+      # STEP 1: DOWNLOAD
+      # ─────────────────────────────────────────────────────────────────────
+      - name: 📥 Download
+        id: download
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          VIDEO_URL: ${{ github.event.inputs.video_url }}
+          CUSTOM: ${{ github.event.inputs.custom_name }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: python3 download.py 2>&1 | tee download.log
+
+      # ─────────────────────────────────────────────────────────────────────
+      # STEP 2: ENCODE
+      # ─────────────────────────────────────────────────────────────────────
+      - name: 🚀 Encode
+        id: encode
+        env:
+          API_ID: ${{ secrets.TG_API_ID }}
+          API_HASH: ${{ secrets.TG_API_HASH }}
+          BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          SESSION_NAME: "enc_session"
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          USER_RES: ${{ github.event.inputs.res_choice }}
+          USER_CRF: ${{ github.event.inputs.custom_crf }}
+          USER_PRESET: ${{ github.event.inputs.custom_preset }}
+          USER_GRAIN: ${{ github.event.inputs.film_grain }}
+          AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
+          AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
+          RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
+          RUN_UPLOAD: ${{ github.event.inputs.run_upload }}
+          ANIME_NAME: ${{ github.event.inputs.anime_name }}
+          SEASON: ${{ github.event.inputs.season }}
+          EPISODE: ${{ github.event.inputs.episode }}
+          AUDIO_TYPE: ${{ github.event.inputs.audio_type }}
+          CONTENT_TYPE: ${{ github.event.inputs.content_type }}
+          SUB_TRACKS: ${{ github.event.inputs.sub_tracks }}
+          AUDIO_TRACKS: ${{ github.event.inputs.audio_tracks }}
+          DEMO_START: ${{ github.event.inputs.demo_start }}
+          DEMO_DURATION: ${{ github.event.inputs.demo_duration }}
+          ENCODER_TITLE: ${{ github.event.inputs.encoder_title }}
+          VIDEO_URL: ${{ github.event.inputs.video_url }}
+        run: |
+          set -eo pipefail
+          # FILE_NAME resolved from tg_fname.txt (written by download step)
+          # Falls back to custom_name input if tg_fname.txt is missing
+          FILE_NAME=$(cat tg_fname.txt 2>/dev/null || echo "${{ github.event.inputs.custom_name }}.mkv")
+          export FILE_NAME
+          echo "🎬 Encoding: $FILE_NAME"
+          python3 main.py 2>&1 | tee encode.log
+
+      # ─────────────────────────────────────────────────────────────────────
+      # STEP 3: NOTIFY FAILURE (runs only if any step above failed)
+      # ─────────────────────────────────────────────────────────────────────
+      - name: 🚨 Notify Failure
+        if: failure()
+        env:
+          BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+          ENCODE_OUTCOME: ${{ steps.encode.outcome }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          UI_TITLE: ${{ github.event.inputs.ui_title || 'Unknown' }}
+        run: python3 notify_failure.py
+
+      # ─────────────────────────────────────────────────────────────────────
+      # CACHE SESSION (always, even on failure)
+      # ─────────────────────────────────────────────────────────────────────
+      - name: 💾 Save Bot Session
+        if: always()
+        run: |
+          LANE="${{ steps.lane.outputs.name }}"
+          if [ -f "enc_session.session" ]; then
+            cp enc_session.session "tg_session_dir/enc_session_${LANE}.session"
+            echo "✅ Bot session saved: enc_session_${LANE}.session"
+          fi
+
+      - name: 🗃 Cache Bot Session
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}

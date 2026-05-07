@@ -168,42 +168,53 @@ def build_output_name(
 # ANITOPY FILENAME PARSER
 # ---------------------------------------------------------------------------
 
+def _load_rename_rules() -> list[dict]:
+    """Load regex rules from rename_rules.json sitting next to this file."""
+    rules_path = Path(__file__).parent / "rename_rules.json"
+    if not rules_path.exists():
+        return []
+    try:
+        with open(rules_path, "r", encoding="utf-8") as f:
+            return json.load(f).get("rules", [])
+    except Exception:
+        return []
+
+
+def _clean_title(title: str) -> str:
+    """Strip release-group brackets, leftover SxxExx markers, and trailing punctuation."""
+    if not title:
+        return ""
+    # Strip ALL leading bracket groups (e.g. "[Group][Tag] Title" → "Title")
+    while re.match(r'^\[.*?\]', title):
+        title = re.sub(r'^\[.*?\]\s*', '', title).strip()
+    # Strip trailing bracket group
+    title = re.sub(r'\s*\[.*?\]$', '', title).strip()
+    # Remove episode markers anitopy may have left in the title
+    title = re.sub(r'(?i)[- ]?S\d+E\d+', '', title)
+    title = re.sub(r'(?i)[- ]?E\d+$', '', title)
+    return title.strip(" -._")
+
+
 def parse_from_filename(raw_filename: str) -> dict | None:
     """
-    Run anitopy on *raw_filename* and return a structured dict:
+    Parse *raw_filename* and return a structured dict:
         {
             "anime_name": str,
             "season":     int,
             "episode":    int,
             "is_special": bool,
         }
-    Returns None if anitopy can't extract a title.
+    Returns None if no title can be extracted.
 
-    Handles:
-      - Standard episodes:  [SubsPlease] Medalist - 07 (1080p).mkv
-      - Seasonal:           Shingeki no Kyojin S3 - 12 [720p].mkv
-      - Specials/OVA:       Oshi no Ko - 01 OVA [BDRip].mkv
-      - S01E04 format:      [Ember] Dungeon Meshi - S01E04 [1080p].mkv
-      - URL-decoded CDN:    Imouto Sae Ireba Ii. - 12.mkv
-      - Greek suffixes:     Steins;Gate 0 - 23β.mkv  (β kept intact)
+    Strategy (priority high → low):
+      1. Body rules  — explicit SxxExx / SP patterns found mid-filename
+      2. Anitopy     — general anime filename parser
+      3. Our prefix  — [SXX-EXX] / [SXX-SPXX] we emitted ourselves (fallback only)
+      4. Defaults    — season=1, episode=1
     """
-    # Pre-detect [SXX-EXX] / [SXX-SPXX] prefix — our own encoder output format.
-    # anitopy treats "[S01-E03]" as a release group and strips it, losing the
-    # episode. Capture season/episode here so we can override anitopy below.
-    _pre_m = re.match(r'^\[S(\d{1,2})[-–](SP?(\d{1,3})|E(\d{1,3}))\]\s*', raw_filename, re.IGNORECASE)
-    _pre_season  = int(_pre_m.group(1))                       if _pre_m else None
-    _pre_episode = int(_pre_m.group(3) or _pre_m.group(4))   if _pre_m else None
-    _pre_special = _pre_m.group(2).upper().startswith("SP")   if _pre_m else False
+    rules = _load_rename_rules()
 
-    # Guard: if the text AFTER the prefix contains its own SxxExx marker the
-    # prefix is stale leftover metadata (e.g. "[S01-E01] S01E07-Title…").
-    # Discard the pre-detected values so anitopy's parse wins instead.
-    if _pre_m:
-        _remainder = raw_filename[_pre_m.end():]
-        if re.search(r'\bS(\d{1,2})E(\d{1,3})\b', _remainder, re.IGNORECASE):
-            _pre_m = _pre_season = _pre_episode = None
-            _pre_special = False
-
+    # ── 1. Anitopy ────────────────────────────────────────────────────────────
     try:
         import anitopy
         p = anitopy.parse(raw_filename)
@@ -211,76 +222,70 @@ def parse_from_filename(raw_filename: str) -> dict | None:
         print(f"[rename] anitopy failed on {raw_filename!r}: {e}")
         return None
 
-    anime_name = p.get("anime_title", "").strip()
+    anime_name = _clean_title(p.get("anime_title", "").strip())
     if not anime_name:
         return None
 
-    # Season — default 1 if not present
-    raw_season = p.get("anime_season", "1") or "1"
-    try:
-        season = int(str(raw_season).strip())
-    except ValueError:
-        season = 1
+    # ── 2. JSON rule matching ─────────────────────────────────────────────────
+    meta = {"season": None, "episode": None, "is_special": False}
+    prefix_meta = None
+    body_found  = False
 
-    # anitopy often includes a trailing season number in the title instead of
-    # parsing it as anime_season. e.g. "Hibike! Euphonium 3" → season=3, title="Hibike! Euphonium"
-    # Only do this when anitopy itself didn't detect a season (season == 1 from default).
-    if season == 1:
-        # Case 1: trailing number — "Hibike! Euphonium 3"
-        m = re.match(r'^(.+?)\s+(\d{1,2})$', anime_name)
-        if m:
-            candidate_season = int(m.group(2))
-            # Sanity check: season 2–9 is plausible, but "Evangelion 1.11" should stay as-is
-            if 2 <= candidate_season <= 9:
-                anime_name = m.group(1).strip()
-                season     = candidate_season
+    for rule in rules:
+        m = re.search(rule["pattern"], raw_filename, re.IGNORECASE)
+        if not m:
+            continue
+        g = m.groupdict()
+        if rule["name"] == "PREFIX":
+            prefix_meta = {
+                "s":  int(g.get("season",  1)),
+                "e":  int(g.get("episode", 1)),
+                "sp": g.get("type", "").upper() == "SP",
+            }
         else:
-            # Case 2: mid-title number before subtitle — "Hibike! Euphonium 3 - Making Episode"
-            # Preserve subtitle: strip the season digit and bare "Episode" keyword.
-            m = re.match(r'^(.+?)\s+(\d{1,2})\s*[-\u2013]\s*(.+)$', anime_name)
-            if m:
-                candidate_season = int(m.group(2))
-                if 2 <= candidate_season <= 9:
-                    subtitle   = re.sub(r'\bEpisode\b', '', m.group(3), flags=re.IGNORECASE).strip()
-                    anime_name = f"{m.group(1).strip()} - {subtitle}".strip(" -").strip()
-                    season     = candidate_season
+            body_found = True
+            if g.get("season"):  meta["season"]     = int(g["season"])
+            if g.get("episode"): meta["episode"]    = int(g["episode"])
+            if "SP" in rule["name"]: meta["is_special"] = True
 
-    # Episode — default 1 if not present
-    raw_ep = p.get("episode_number", "1") or "1"
-    # anitopy may return "23β" or "01-12" — take leading digits
-    ep_digits = re.match(r"\d+", str(raw_ep).strip())
-    episode = int(ep_digits.group()) if ep_digits else 1
+    # ── 3. Merge: Body > Anitopy > Prefix > Default ───────────────────────────
+    # Safe int helpers — anitopy can return "2nd", "III", "23β", etc.
+    def _safe(val, fallback=0):
+        m = re.match(r'\d+', str(val).strip()) if val else None
+        return int(m.group()) if m else fallback
 
-    # Special flag: OVA / ONA / SP / Special in episode_type or anime_type
-    special_keywords = {"ova", "ona", "sp", "special", "movie"}
-    ep_type    = str(p.get("episode_type",  "") or "").lower()
-    anime_type = str(p.get("anime_type",    "") or "").lower()
-    is_special = bool(special_keywords & {ep_type, anime_type})
+    anitopy_season  = _safe(p.get("anime_season"),  0)
+    anitopy_episode = _safe(p.get("episode_number"), 0)
 
-    # Fallback: anitopy misses "SP03" and "[Judas]-style" "- S03" specials.
-    # An explicit SP prefix always wins; "- S\d+" is a special only when a
-    # season was already detected (so S03 isn't mistaken for a lone season tag).
-    if not is_special:
-        # Explicit SP prefix: SP03, SP3, [SP03], etc.
-        sp_m = re.search(r'\bSP(\d{1,3})\b', raw_filename, re.IGNORECASE)
-        if sp_m:
-            is_special = True
-            episode    = int(sp_m.group(1))
-        # "- S03" / " S03" style when a separate season (S1/S2…) is already known
-        elif season > 0:
-            s_m = re.search(r'[-\s]S(\d{2,3})(?=\s|$|\[|\.)', raw_filename)
-            # Only treat as special if this number doesn't match the already-parsed season
-            if s_m and int(s_m.group(1)) != season:
-                is_special = True
-                episode    = int(s_m.group(1))
+    season = (
+        meta["season"]
+        or anitopy_season
+        or (prefix_meta["s"] if prefix_meta else 0)
+        or 1
+    )
+    episode = (
+        meta["episode"]
+        or anitopy_episode
+        or (prefix_meta["e"] if prefix_meta else 0)
+        or 1
+    )
+    is_special = (
+        meta["is_special"]
+        or p.get("episode_type") in ("OVA", "Special")
+        or (prefix_meta["sp"] if prefix_meta else False)
+    )
 
-    # Override with pre-detected [SXX-EXX] values — anitopy missed them.
-    if _pre_season  is not None: season     = _pre_season
-    if _pre_episode is not None: episode    = _pre_episode
-    if _pre_m:                   is_special = _pre_special
+    # ── 4. Trailing-digit season extraction ───────────────────────────────────
+    # "Hibike! Euphonium 3" → season=3, title="Hibike! Euphonium"
+    # Only when anitopy didn't already detect a season.
+    if season == 1:
+        tm = re.search(r'^(.+?)\s+([2-9])$', anime_name)
+        if tm:
+            anime_name = tm.group(1).strip()
+            season     = int(tm.group(2))
 
     print(
-        f"[rename] anitopy → {anime_name!r}  "
+        f"[rename] parsed → {anime_name!r}  "
         f"S{season:02d}{'SP' if is_special else 'E'}{episode:02d}"
     )
     return {

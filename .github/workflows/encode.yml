@@ -135,6 +135,7 @@ jobs:
               done
             done
           fi
+          which ffmpeg ffprobe || sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: ⬇️ Install yt-dlp
         if: steps.ytdlp-cache.outputs.cache-hit != 'true'

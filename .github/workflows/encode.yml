@@ -118,7 +118,7 @@ jobs:
         with:
           path: |
             /opt/ffenc
-          key: svt-av1-psyex-ffmpeg-${{ runner.os }}-v1
+          key: svt-av1-psyex-ffmpeg-${{ runner.os }}-v2
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE: apt packages (aria2, mkvtoolnix, curl)

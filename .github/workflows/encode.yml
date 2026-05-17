@@ -229,7 +229,8 @@ jobs:
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p /opt/ffenc/bin /opt/ffenc/lib
-          cp ffmpeg_install/bin/ffmpeg /opt/ffenc/bin/ && strip /opt/ffenc/bin/ffmpeg
+          cp ffmpeg_install/bin/ffmpeg  /opt/ffenc/bin/ && strip /opt/ffenc/bin/ffmpeg
+          cp ffmpeg_install/bin/ffprobe /opt/ffenc/bin/ && strip /opt/ffenc/bin/ffprobe
           ldd ffmpeg_install/bin/ffmpeg \
             | awk '/=> \// {print $3}' \
             | grep -Ev 'libstdc\+\+\.so|libgcc_s\.so|libc\.so\.|libm\.so\.|libdl\.so\.|libpthread\.so\.|librt\.so\.|ld-linux' \
@@ -240,8 +241,9 @@ jobs:
         run: |
           echo "/opt/ffenc/bin" >> $GITHUB_PATH
           echo "LD_LIBRARY_PATH=/opt/ffenc/lib" >> $GITHUB_ENV
-          chmod +x /opt/ffenc/bin/ffmpeg
-          ffmpeg -version | head -3
+          chmod +x /opt/ffenc/bin/ffmpeg /opt/ffenc/bin/ffprobe
+          ffmpeg  -version | head -3
+          ffprobe -version | head -1
 
       - name: 📁 Setup Session Dir
         run: mkdir -p tg_session_dir

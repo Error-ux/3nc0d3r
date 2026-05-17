@@ -200,29 +200,15 @@ jobs:
           N="${{ github.event.inputs.chunks }}"
 
           # Write source info for coordinator
-          python3 - "$FILE_NAME" << 'PYEOF'
-          import json, subprocess, sys
-          fname = sys.argv[1]
-          cmd = ["/usr/bin/ffprobe", "-v", "quiet", "-print_format", "json",
-                 "-show_streams", "-show_format", "source.mkv"]
-          res = json.loads(subprocess.check_output(cmd).decode())
-          vs = next(s for s in res["streams"] if s["codec_type"] == "video")
-          fps_raw = vs.get("r_frame_rate", "24/1")
-          num, den = fps_raw.split("/")
-          fps = round(int(num) / int(den), 3)
-          w = int(vs.get("width", 0))
-          h = int(vs.get("height", 0))
-          info = {
-              "resolution": str(w) + "x" + str(h),
-              "width": w, "height": h, "fps": fps,
-              "duration": float(res["format"].get("duration", 0)),
-              "is_hdr": "bt2020" in vs.get("color_primaries", ""),
-              "file_name": fname,
-          }
-          with open("source_info.json", "w") as f:
-              json.dump(info, f, indent=2)
-          print(json.dumps(info, indent=2))
-          PYEOF
+          SRC_W=$(ffprobe -v error -select_streams v:0 -show_entries stream=width \
+            -of default=noprint_wrappers=1:nokey=1 source.mkv)
+          SRC_H=$(ffprobe -v error -select_streams v:0 -show_entries stream=height \
+            -of default=noprint_wrappers=1:nokey=1 source.mkv)
+          SRC_DUR=$(ffprobe -v error -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 source.mkv)
+          printf '{"resolution":"%sx%s","width":%s,"height":%s,"duration":%s,"file_name":"%s"}\n' \
+            "$SRC_W" "$SRC_H" "$SRC_W" "$SRC_H" "$SRC_DUR" "$FILE_NAME" > source_info.json
+          echo "=== Source Info ===" && cat source_info.json
 
           # Split into N equal chunks
           DURATION=$(ffprobe -v error -show_entries format=duration \

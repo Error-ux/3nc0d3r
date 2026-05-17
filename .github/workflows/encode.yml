@@ -1,0 +1,507 @@
+name: AV1 Universal Pipeline
+run-name: "🚀 [MISSION]: ${{ inputs.ui_title || inputs.custom_name || 'Target' }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ui_title:
+        description: 'Dashboard Title'
+      video_url:
+        description: 'Link (TG, M3U8, or Direct CDN)'
+        required: true
+      custom_name:
+        description: 'Output Filename'
+      res_choice:
+        description: 'Resolution'
+      custom_crf:
+        description: 'CRF'
+        default: '48'
+      custom_preset:
+        description: 'Preset'
+        default: '6'
+      film_grain:
+        description: 'Grain'
+        default: '0'
+      psy_rd:
+        description: 'Psy-RD strength (0.0–6.0)'
+        default: '1.5'
+      complex_hvs:
+        description: 'Complex HVS — preset 4–6 only (0=off, 1=on)'
+        default: '1'
+      chunks:
+        description: 'Parallel encode chunks (1–19)'
+        default: '10'
+      audio_mode:
+        description: 'Audio Mode'
+        default: 'opus'
+      audio_bitrate:
+        description: 'Audio Bitrate'
+        default: '48k'
+      run_vmaf:
+        description: 'Run VMAF?'
+        default: 'true'
+      run_upload:
+        description: 'Upload to Gofile?'
+        default: 'false'
+      anime_name:
+        description: 'Anime Name (leave blank to skip rename)'
+        default: ''
+      season:
+        description: 'Season Number'
+        default: '1'
+      episode:
+        description: 'Episode Number'
+        default: '1'
+      audio_type:
+        description: 'Audio Type Override (Auto/Sub/Dual/Tri/Multi)'
+        default: 'Auto'
+      content_type:
+        description: 'Content Type (Anime/Donghua/Hentai/HMV/AMV/custom)'
+        default: 'Anime'
+      sub_tracks:
+        description: 'Subtitle Track Labels'
+        default: ''
+      audio_tracks:
+        description: 'Audio Track Labels'
+        default: ''
+      demo_start:
+        description: 'Demo Start (seconds or HH:MM:SS)'
+        default: '0'
+      demo_duration:
+        description: 'Demo Duration in seconds (leave blank for full encode)'
+        default: ''
+      encoder_title:
+        description: 'MKV Title Tag Branding'
+        default: "zub'sEncodes"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JOB 1 — Download source + split into N chunks + analyse media info
+# ══════════════════════════════════════════════════════════════════════════════
+  prepare:
+    name: "📥 Download & Split"
+    runs-on: ubuntu-latest
+    outputs:
+      chunk_matrix: ${{ steps.split.outputs.chunk_matrix }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 📦 Cache Python Packages
+        id: pip-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/lib/python3.10/site-packages
+          key: pip-packages-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: 📦 Cache yt-dlp Binary
+        id: ytdlp-cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/yt-dlp
+          key: yt-dlp-standalone-${{ runner.os }}-latest
+
+      - name: 📦 Cache APT Packages
+        id: apt-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/apt-cache
+          key: apt-packages-${{ runner.os }}-aria2-mkvtoolnix-curl-v1
+
+      - name: 🛠 Install System Tools
+        run: |
+          if [ "${{ steps.apt-cache.outputs.cache-hit }}" = "true" ]; then
+            sudo cp -rn /tmp/apt-cache/usr / && sudo ldconfig
+          else
+            sudo wget -q -O /usr/share/keyrings/gpg-pub-moritzbunkus.gpg \
+              https://mkvtoolnix.download/gpg-pub-moritzbunkus.gpg
+            echo "deb [signed-by=/usr/share/keyrings/gpg-pub-moritzbunkus.gpg] https://mkvtoolnix.download/ubuntu/ $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/mkvtoolnix.list
+            sudo apt-get update && sudo apt-get install -y \
+              aria2 mkvtoolnix curl ffmpeg \
+              build-essential cmake nasm yasm git pkg-config libopus-dev
+            mkdir -p /tmp/apt-cache/usr
+            for pkg in aria2 mkvtoolnix curl; do
+              dpkg -L $pkg | while read f; do
+                [ -f "$f" ] && sudo cp --parents "$f" /tmp/apt-cache/ 2>/dev/null || true
+              done
+            done
+          fi
+
+      - name: ⬇️ Install yt-dlp
+        if: steps.ytdlp-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+            -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp
+
+      - name: ✅ Verify yt-dlp
+        if: steps.ytdlp-cache.outputs.cache-hit == 'true'
+        run: chmod +x /usr/local/bin/yt-dlp
+
+      - name: 🐍 Install Python Packages
+        run: |
+          [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ] && \
+            pip install --user -r requirements.txt || true
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: 📁 Setup Session Dir
+        run: mkdir -p tg_session_dir
+
+      - name: 🔀 Resolve Lane
+        id: lane
+        run: |
+          LANES=(A B C D E F G H I J K L M N O P Q R S T)
+          IDX=$(( ${{ github.run_number }} % 20 ))
+          echo "name=lane-${LANES[$IDX]}" >> $GITHUB_OUTPUT
+
+      - name: 💾 Restore Session Cache
+        uses: actions/cache@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}
+
+      - name: 🔑 Authorize Bot Session
+        run: |
+          LANE="${{ steps.lane.outputs.name }}"
+          for f in "tg_session_dir/enc_session_${LANE}.session" \
+                   "tg_session_dir/tg_dl_session_${LANE}.session" \
+                   "tg_session_dir/enc_session.session" \
+                   "tg_session_dir/tg_dl_session.session"; do
+            if [ -f "$f" ]; then
+              cp "$f" "tg_session_dir/enc_session_${LANE}.session"
+              cp "$f" ./enc_session.session
+              break
+            fi
+          done
+
+      - name: 📥 Download
+        env:
+          TG_API_ID:    ${{ secrets.TG_API_ID }}
+          TG_API_HASH:  ${{ secrets.TG_API_HASH }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
+          VIDEO_URL:    ${{ github.event.inputs.video_url }}
+          CUSTOM:       ${{ github.event.inputs.custom_name }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: python3 download.py 2>&1 | tee download.log
+
+      - name: 🔬 Analyse Source & Split
+        id: split
+        run: |
+          FILE_NAME=$(cat tg_fname.txt 2>/dev/null || echo "${{ github.event.inputs.custom_name }}.mkv")
+          N="${{ github.event.inputs.chunks }}"
+
+          # Write source info for coordinator
+          python3 - << EOF
+          import json
+          from utils.media import get_video_info
+          info = get_video_info("source.mkv")
+          info["file_name"] = "$FILE_NAME"
+          with open("source_info.json", "w") as f:
+              json.dump(info, f, indent=2)
+          print(json.dumps(info, indent=2))
+          EOF
+
+          # Split into N equal chunks
+          DURATION=$(ffprobe -v error -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 source.mkv)
+          CHUNK_DUR=$(echo "scale=6; $DURATION / $N" | bc)
+
+          mkdir -p chunks
+          ffmpeg -hide_banner -loglevel warning \
+            -i source.mkv -c copy \
+            -f segment -segment_time "$CHUNK_DUR" \
+            -reset_timestamps 1 -segment_start_number 1 \
+            -map 0 "chunks/chunk_%03d.mkv"
+
+          echo "=== Chunks ==="
+          ls -lh chunks/
+
+          MATRIX=$(python3 -c "
+          import json, glob
+          files = sorted(glob.glob('chunks/chunk_*.mkv'))
+          idxs = [f.split('_')[-1].replace('.mkv','') for f in files]
+          print(json.dumps(idxs))")
+          echo "chunk_matrix=${MATRIX}" >> $GITHUB_OUTPUT
+
+      - name: 📤 Upload Chunks + Source Info
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-chunks
+          path: |
+            chunks/
+            source_info.json
+            tg_fname.txt
+          retention-days: 1
+
+      - name: 💾 Save Bot Session
+        if: always()
+        run: |
+          LANE="${{ steps.lane.outputs.name }}"
+          [ -f enc_session.session ] && \
+            cp enc_session.session "tg_session_dir/enc_session_${LANE}.session" || true
+
+      - name: 🗃 Cache Bot Session
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JOB 2 — Build SVT-AV1-PSYEX + FFmpeg (cached, runs parallel to prepare)
+# ══════════════════════════════════════════════════════════════════════════════
+  build-ffmpeg:
+    name: "🔨 Build FFmpeg [svt-av1-psyex]"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🛠 Install Build Deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake nasm yasm git pkg-config libopus-dev
+
+      - name: 📦 Restore PSYEX Cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/ffenc
+          key: svt-av1-psyex-ffmpeg-${{ runner.os }}-v1
+
+      - name: 🔨 Build SVT-AV1-PSYEX
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 https://github.com/BlueSwordM/svt-av1-psyex.git svt_src
+          cmake -B svt_src/Build -S svt_src \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_INSTALL_PREFIX="$PWD/encoder_install"
+          cmake --build svt_src/Build -j$(nproc)
+          cmake --install svt_src/Build
+
+      - name: 🔨 Build FFmpeg
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 https://github.com/FFmpeg/FFmpeg.git ffmpeg_src
+          cd ffmpeg_src
+          PKG_CONFIG_PATH="$GITHUB_WORKSPACE/encoder_install/lib/pkgconfig:${PKG_CONFIG_PATH}" \
+          ./configure \
+            --prefix="$GITHUB_WORKSPACE/ffmpeg_install" \
+            --enable-libsvtav1 --enable-libopus \
+            --enable-gpl --enable-version3 \
+            --disable-doc --disable-debug --disable-ffplay \
+            --extra-cflags="-I$GITHUB_WORKSPACE/encoder_install/include" \
+            --extra-ldflags="-L$GITHUB_WORKSPACE/encoder_install/lib" \
+            --extra-libs="-lpthread -lm"
+          make -j$(nproc) && make install
+
+      - name: 📦 Package to /opt/ffenc
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /opt/ffenc/bin /opt/ffenc/lib
+          cp ffmpeg_install/bin/ffmpeg /opt/ffenc/bin/ && strip /opt/ffenc/bin/ffmpeg
+          ldd ffmpeg_install/bin/ffmpeg \
+            | awk '/=> \// {print $3}' \
+            | grep -Ev 'libstdc\+\+|libgcc_s|libc\.so\.|libm\.so\.|libdl|libpthread|librt|ld-linux' \
+            | xargs -I{} cp -v {} /opt/ffenc/lib/ 2>/dev/null || true
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JOB 3 — Encode chunks in parallel (matrix, up to 19 workers)
+# ══════════════════════════════════════════════════════════════════════════════
+  encode:
+    name: "⚡ Encode chunk-${{ matrix.chunk }}"
+    needs: [prepare, build-ffmpeg]
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk: ${{ fromJSON(needs.prepare.outputs.chunk_matrix) }}
+
+    steps:
+      - name: 📥 Download Source Chunk
+        uses: actions/download-artifact@v4
+        with:
+          name: source-chunks
+          path: src/
+
+      - name: 📦 Restore PSYEX FFmpeg
+        uses: actions/cache@v4
+        with:
+          path: /opt/ffenc
+          key: svt-av1-psyex-ffmpeg-${{ runner.os }}-v1
+
+      - name: 🔗 Expose FFmpeg on PATH
+        run: |
+          echo "/opt/ffenc/bin" >> $GITHUB_PATH
+          echo "LD_LIBRARY_PATH=/opt/ffenc/lib" >> $GITHUB_ENV
+          chmod +x /opt/ffenc/bin/ffmpeg
+
+      - name: ⚡ Encode
+        run: |
+          CRF="${{ github.event.inputs.custom_crf }}"
+          PRESET="${{ github.event.inputs.custom_preset }}"
+          GRAIN="${{ github.event.inputs.film_grain }}"
+          PSY_RD="${{ github.event.inputs.psy_rd }}"
+          COMPLEX_HVS="${{ github.event.inputs.complex_hvs }}"
+          AUDIO_BR="${{ github.event.inputs.audio_bitrate }}"
+          CHUNK="${{ matrix.chunk }}"
+
+          # Guard: disable complex-hvs above preset 6
+          [ "$PRESET" -gt 6 ] && COMPLEX_HVS=0
+
+          SVTPARAMS="tune=0:film-grain=${GRAIN}:enable-overlays=1:scd=1"
+          SVTPARAMS+=":psy-rd=${PSY_RD}:complex-hvs=${COMPLEX_HVS}"
+          SVTPARAMS+=":sharp-tx=1:noise-adaptive-filtering=4"
+          SVTPARAMS+=":qm-min=8:qp-scale-compress-strength=2"
+          SVTPARAMS+=":pin=0:lp=2:tile-columns=2:tile-rows=1:la-depth=60"
+
+          ffmpeg -hide_banner -loglevel warning -stats \
+            -i "src/chunks/chunk_${CHUNK}.mkv" \
+            -c:v libsvtav1 \
+            -pix_fmt yuv420p10le \
+            -crf "$CRF" -preset "$PRESET" \
+            -color_primaries bt709 -color_trc bt709 -colorspace bt709 \
+            -svtav1-params "$SVTPARAMS" \
+            -af "aformat=channel_layouts=stereo" \
+            -c:a libopus -b:a "$AUDIO_BR" -vbr on \
+            -c:s copy -map_chapters 0 \
+            "encoded_${CHUNK}.mkv" -y
+
+      - name: 📤 Upload Encoded Chunk
+        uses: actions/upload-artifact@v4
+        with:
+          name: "enc-${{ matrix.chunk }}"
+          path: "encoded_${{ matrix.chunk }}.mkv"
+          retention-days: 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JOB 4 — Coordinate: monitor encode progress → merge → send to TG
+# Starts right after prepare (runs concurrently with encode matrix).
+# Polls GitHub API for chunk job statuses, updates TG live, then merges.
+# ══════════════════════════════════════════════════════════════════════════════
+  coordinate:
+    name: "🎛 Coordinate & Send"
+    needs: [prepare, build-ffmpeg]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 📦 Restore Python Cache
+        id: pip-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/lib/python3.10/site-packages
+          key: pip-packages-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: 🐍 Install Python Packages
+        run: |
+          [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ] && \
+            pip install --user -r requirements.txt || true
+          pip install --user requests
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: 🛠 Install FFmpeg (system — for concat only)
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: 📁 Setup Session Dir
+        run: mkdir -p tg_session_dir
+
+      - name: 🔀 Resolve Lane
+        id: lane
+        run: |
+          LANES=(A B C D E F G H I J K L M N O P Q R S T)
+          IDX=$(( ${{ github.run_number }} % 20 ))
+          echo "name=lane-${LANES[$IDX]}" >> $GITHUB_OUTPUT
+
+      - name: 💾 Restore Session Cache
+        uses: actions/cache@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}
+
+      - name: 🔑 Authorize Bot Session
+        run: |
+          LANE="${{ steps.lane.outputs.name }}"
+          for f in "tg_session_dir/enc_session_${LANE}.session" \
+                   "tg_session_dir/enc_session.session"; do
+            if [ -f "$f" ]; then
+              cp "$f" ./enc_session.session && break
+            fi
+          done
+
+      - name: 📥 Download Source Info
+        uses: actions/download-artifact@v4
+        with:
+          name: source-chunks
+          path: src/
+
+      - name: 🎛 Run Coordinator
+        env:
+          API_ID:       ${{ secrets.TG_API_ID }}
+          API_HASH:     ${{ secrets.TG_API_HASH }}
+          BOT_TOKEN:    ${{ secrets.TG_BOT_TOKEN }}
+          CHAT_ID:      ${{ secrets.TG_CHAT_ID }}
+          SESSION_NAME: enc_session
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID:     ${{ github.run_id }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          USER_CRF:     ${{ github.event.inputs.custom_crf }}
+          USER_PRESET:  ${{ github.event.inputs.custom_preset }}
+          USER_GRAIN:   ${{ github.event.inputs.film_grain }}
+          PSY_RD:       ${{ github.event.inputs.psy_rd }}
+          COMPLEX_HVS:  ${{ github.event.inputs.complex_hvs }}
+          CHUNKS:       ${{ github.event.inputs.chunks }}
+          AUDIO_MODE:   ${{ github.event.inputs.audio_mode }}
+          AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
+          RUN_VMAF:     ${{ github.event.inputs.run_vmaf }}
+          RUN_UPLOAD:   ${{ github.event.inputs.run_upload }}
+          ANIME_NAME:   ${{ github.event.inputs.anime_name }}
+          SEASON:       ${{ github.event.inputs.season }}
+          EPISODE:      ${{ github.event.inputs.episode }}
+          AUDIO_TYPE:   ${{ github.event.inputs.audio_type }}
+          CONTENT_TYPE: ${{ github.event.inputs.content_type }}
+          SUB_TRACKS:   ${{ github.event.inputs.sub_tracks }}
+          AUDIO_TRACKS: ${{ github.event.inputs.audio_tracks }}
+          ENCODER_TITLE: ${{ github.event.inputs.encoder_title }}
+        run: python3 coordinator.py 2>&1 | tee coordinator.log
+
+      - name: 💾 Save Bot Session
+        if: always()
+        run: |
+          LANE="${{ steps.lane.outputs.name }}"
+          [ -f enc_session.session ] && \
+            cp enc_session.session "tg_session_dir/enc_session_${LANE}.session" || true
+
+      - name: 🗃 Cache Bot Session
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}
+
+      - name: 🚨 Notify Failure
+        if: failure()
+        env:
+          BOT_TOKEN:  ${{ secrets.TG_BOT_TOKEN }}
+          CHAT_ID:    ${{ secrets.TG_CHAT_ID }}
+          UI_TITLE:   ${{ github.event.inputs.ui_title || 'Unknown' }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: python3 notify_failure.py

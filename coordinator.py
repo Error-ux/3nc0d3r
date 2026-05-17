@@ -56,9 +56,12 @@ def any_encode_job_failed(jobs: list[dict]) -> bool:
     )
 
 
-def compute_eta(jobs: list[dict], n_done: int) -> float:
+def compute_eta(jobs: list[dict], n_done: int) -> float | None:
     """
     Live ETA: uses actual elapsed time for in-progress chunks.
+
+    Returns None when there is not enough data to estimate.
+    Returns 0.0 when all remaining chunks are imminently finishing.
 
     Completed chunks give us avg_duration.
     In-progress chunks have already consumed (now - started_at) seconds.
@@ -98,7 +101,8 @@ def compute_eta(jobs: list[dict], n_done: int) -> float:
             if avg_dur is not None:
                 remaining.append(avg_dur)
 
-    return max(remaining) if remaining else 0.0
+    # None = no data yet; 0.0 = chunks are finishing imminently
+    return max(remaining) if remaining else (None if avg_dur is None else 0.0)
 
 
 # ── Artifact download ─────────────────────────────────────────────────────────
@@ -266,7 +270,7 @@ async def run():
     done_ui = (
         f"<code>┌─── ✅ [ MISSION.COMPLETE ] ────────┐\n"
         f"│\n"
-        f"│ 📂 FILE: {file_name}\n"
+        f"│ 📂 FILE: {output_name}\n"
         f"│ 🛠️  CRF {final_crf} | Preset {final_preset} | PSY-RD {psy_rd}\n"
         f"│ 🎞️  {res_label} | 10-bit | PSYEX\n"
         f"│ ⚡ {TOTAL_CHUNKS} chunks | Wall: {format_time(total_elapsed)}\n"

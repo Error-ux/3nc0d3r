@@ -211,9 +211,19 @@ jobs:
             "$SRC_W" "$SRC_H" "$SRC_W" "$SRC_H" "$SRC_DUR" "$FILE_NAME" > source_info.json
           echo "=== Source Info ===" && cat source_info.json
 
-          # Split into N equal chunks
+          # Split into N equal chunks.
+          # Cap N so each chunk is at least MIN_CHUNK_DUR seconds.
+          # Each chunk forces one IDR key frame (~300-500 KB on 1080p).
+          # On full episodes this overhead is <0.5%; on short clips it dominates.
+          MIN_CHUNK_DUR=90
           DURATION=$(ffprobe -v error -show_entries format=duration \
             -of default=noprint_wrappers=1:nokey=1 source.mkv)
+          MAX_CHUNKS=$(echo "scale=0; $DURATION / $MIN_CHUNK_DUR" | bc)
+          MAX_CHUNKS=$(( ${MAX_CHUNKS:-0} < 1 ? 1 : ${MAX_CHUNKS:-1} ))
+          if [ "$N" -gt "$MAX_CHUNKS" ]; then
+            echo "⚠️  Requested $N chunks but source is ${DURATION}s — capping to $MAX_CHUNKS to avoid IDR bloat"
+            N=$MAX_CHUNKS
+          fi
           CHUNK_DUR=$(echo "scale=6; $DURATION / $N" | bc)
 
           mkdir -p chunks

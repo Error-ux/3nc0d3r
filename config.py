@@ -55,6 +55,3 @@ DEMO_START    = os.getenv("DEMO_START",    "0")   # seconds or HH:MM:SS
 DEMO_DURATION = os.getenv("DEMO_DURATION", "")    # seconds; blank = full encode
 
 
-
-# ---------- PARALLEL ENCODE SETTINGS ----------
-CHUNKS      = int(os.getenv("CHUNKS",  "10"))

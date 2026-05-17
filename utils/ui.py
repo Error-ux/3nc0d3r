@@ -3,22 +3,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))  # repo root
 
 import time
-from datetime import timedelta, datetime, timezone
+from datetime import timedelta
 import os
 from pyrogram import enums
 
 last_up_update = 0
 last_up_pct    = -1
 up_start_time  = 0
-
-# Spinner frames cycled by wall-clock seconds for in-progress chunks
-_SPINNERS = ["⚙️ ", "🔄", "⚙️ ", "🔄"]
-
-def _spinner(now_utc: datetime | None) -> str:
-    if now_utc is None:
-        return "⚙️ "
-    idx = int(now_utc.second / 2) % len(_SPINNERS)
-    return _SPINNERS[idx]
 
 def generate_progress_bar(percentage):
     total_segments = 15
@@ -27,21 +18,6 @@ def generate_progress_bar(percentage):
 
 def format_time(seconds):
     return str(timedelta(seconds=int(seconds))).zfill(8)
-
-def _chunk_elapsed(job: dict, now_utc: datetime) -> str:
-    """Return MM:SS elapsed for an in-progress job, or '' if unavailable."""
-    started = job.get("started_at")
-    if not started:
-        return ""
-    try:
-        s = datetime.strptime(started, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        secs = int((now_utc - s).total_seconds())
-        if secs < 0:
-            return ""
-        m, s2 = divmod(secs, 60)
-        return f"{m}:{s2:02d}"
-    except Exception:
-        return ""
 
 def get_vmaf_ui(percent, speed, eta):
     bar = generate_progress_bar(percent)
@@ -145,91 +121,3 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     except Exception:
         pass
     last_up_update = now
-
-def get_parallel_ui(
-    jobs, total, n_done, elapsed, eta, file_name, crf, preset, psy_rd, res_label,
-    now_utc: datetime | None = None,
-):  # eta: float | None — None means no data yet
-    """Parallel encode progress UI for coordinator TG messages."""
-
-    if now_utc is None:
-        now_utc = datetime.now(timezone.utc)
-
-    # Overall progress: completed chunks count as 1.0, in-progress chunks
-    # contribute their elapsed fraction (elapsed / avg_completed_duration).
-    # This makes the bar move continuously instead of jumping on completions.
-    completed_durs = []
-    for j in jobs:
-        if j["status"] == "completed" and j.get("started_at") and j.get("completed_at"):
-            try:
-                s = datetime.strptime(j["started_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                e = datetime.strptime(j["completed_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                completed_durs.append((e - s).total_seconds())
-            except Exception:
-                pass
-    avg_dur = sum(completed_durs) / len(completed_durs) if completed_durs else None
-
-    fractional_done = n_done
-    for j in jobs:
-        if j["status"] == "in_progress" and j.get("started_at") and avg_dur:
-            try:
-                s = datetime.strptime(j["started_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                chunk_elapsed = (now_utc - s).total_seconds()
-                fractional_done += min(0.95, chunk_elapsed / avg_dur)  # cap at 95% until truly done
-            except Exception:
-                pass
-
-    overall_pct = (fractional_done / total * 100) if total else 0
-    bar = generate_progress_bar(overall_pct)
-    spin = _spinner(now_utc)
-
-    # Build chunk status grid — 5 per row
-    # In-progress: show live elapsed time so the message visibly changes every update
-    lines = []
-    row = []
-    for i in range(1, total + 1):
-        tag = str(i).zfill(2)
-        job = next((j for j in jobs if f"chunk-{str(i).zfill(3)}" in j["name"]), None)
-
-        if job is None:
-            cell = f"{tag}⏳"
-        elif job["status"] == "completed" and job["conclusion"] == "success":
-            cell = f"{tag}✅"
-        elif job["status"] == "completed":
-            cell = f"{tag}❌"
-        elif job["status"] == "in_progress":
-            t = _chunk_elapsed(job, now_utc)
-            cell = f"{tag}{spin}{t}" if t else f"{tag}{spin}"
-        else:
-            cell = f"{tag}🕐"
-
-        row.append(cell)
-        if len(row) == 5:
-            lines.append("  ".join(row))
-            row = []
-    if row:
-        lines.append("  ".join(row))
-
-    chunk_grid = "\n│ ".join(lines)
-
-    n_running = sum(1 for j in jobs if j["status"] == "in_progress")
-    n_queued  = total - n_done - n_running
-
-    eta_str     = format_time(eta) if eta is not None else "--:--:--"
-    elapsed_str = format_time(elapsed)
-
-    return (
-        f"<code>┌─── 🛸 [ SYSTEM.PARALLEL.ENCODE ] ──┐\n"
-        f"│\n"
-        f"│ 📂 FILE: {file_name}\n"
-        f"│ 🛠️  CRF {crf} | Preset {preset} | PSY-RD {psy_rd}\n"
-        f"│ 🎞️  {res_label} | 10-bit | PSYEX\n"
-        f"│\n"
-        f"│ 📊 OVERALL: {bar} {overall_pct:.0f}%\n"
-        f"│ ⚡ WALL: {elapsed_str}  ETA: {eta_str}\n"
-        f"│ ✅ {n_done}/{total} done  🔄 {n_running} running  🕐 {n_queued} queued\n"
-        f"│\n"
-        f"│ {chunk_grid}\n"
-        f"│\n"
-        f"└────────────────────────────────────┘</code>"
-    )

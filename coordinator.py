@@ -7,6 +7,7 @@ import glob
 from datetime import datetime, timezone
 
 import requests
+from pyrogram import enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
@@ -245,8 +246,12 @@ async def run():
 
     height = src_info.get("height", 0)
 
+    # Use the first downloaded chunk as the probe source so ffprobe has a real file
+    probe_source = sorted(glob.glob("encoded/enc-*/encoded_*.mkv"))
+    probe_source = probe_source[0] if probe_source else file_name
+
     output_name, _, _, _ = resolve_output_name(
-        source      = file_name,
+        source      = probe_source,
         anime_name  = anime_name,
         season      = season,
         episode     = episode,
@@ -280,7 +285,7 @@ async def run():
             chat_id,
             output_name,
             caption=done_ui,
-            parse_mode="html",
+            parse_mode=enums.ParseMode.HTML,
             progress=upload_progress,
             progress_args=(app, chat_id, status_msg, output_name),
         )

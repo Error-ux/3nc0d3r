@@ -129,7 +129,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/apt-cache
-          key: apt-packages-${{ runner.os }}-aria2-mkvtoolnix-curl-v1
+          key: apt-packages-${{ runner.os }}-aria2-mkvtoolnix-curl-v2
 
       - name: 🛠 Install System Tools
         run: |
@@ -152,7 +152,7 @@ jobs:
               build-essential cmake nasm yasm git pkg-config libopus-dev
             echo "💾 Saving apt packages to cache..."
             mkdir -p /tmp/apt-cache/usr
-            for pkg in aria2 mkvtoolnix curl; do
+            for pkg in aria2 mkvtoolnix curl nasm yasm; do
               dpkg -L $pkg | while read f; do
                 [ -f "$f" ] && sudo cp --parents "$f" /tmp/apt-cache/ 2>/dev/null || true
               done

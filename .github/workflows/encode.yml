@@ -203,7 +203,7 @@ jobs:
           python3 - "$FILE_NAME" << 'PYEOF'
           import json, subprocess, sys
           fname = sys.argv[1]
-          cmd = ["ffprobe", "-v", "quiet", "-print_format", "json",
+          cmd = ["/usr/bin/ffprobe", "-v", "quiet", "-print_format", "json",
                  "-show_streams", "-show_format", "source.mkv"]
           res = json.loads(subprocess.check_output(cmd).decode())
           vs = next(s for s in res["streams"] if s["codec_type"] == "video")
@@ -255,6 +255,15 @@ jobs:
             source_info.json
             tg_fname.txt
           retention-days: 1
+
+      - name: 🚨 Notify Download Failure
+        if: failure()
+        env:
+          BOT_TOKEN:  ${{ secrets.TG_BOT_TOKEN }}
+          CHAT_ID:    ${{ secrets.TG_CHAT_ID }}
+          UI_TITLE:   ${{ github.event.inputs.ui_title || 'Unknown' }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: python3 notify_failure.py
 
       - name: 💾 Save Bot Session
         if: always()

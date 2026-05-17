@@ -4,6 +4,7 @@ import os
 import subprocess
 import time
 import glob
+from datetime import datetime, timezone
 
 import requests
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -11,7 +12,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import config
 from utils.tg_utils import connect_telegram, tg_edit, tg_notify_failure
 from utils.ui import get_parallel_ui, format_time, upload_progress
-from utils.rename import resolve_output_name, format_track_report
+from utils.rename import resolve_output_name, parse_from_filename, format_track_report
 
 # ── GitHub API helpers ────────────────────────────────────────────────────────
 
@@ -25,6 +26,12 @@ _GH_HEADERS = {
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
 }
+
+_DT_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+def _parse_dt(s: str) -> datetime:
+    return datetime.strptime(s, _DT_FMT).replace(tzinfo=timezone.utc)
+
 
 def get_encode_jobs() -> list[dict]:
     """Return all jobs for this run whose name starts with 'Encode chunk-'."""
@@ -46,6 +53,51 @@ def any_encode_job_failed(jobs: list[dict]) -> bool:
         j["status"] == "completed" and j["conclusion"] != "success"
         for j in jobs
     )
+
+
+def compute_eta(jobs: list[dict], n_done: int) -> float:
+    """
+    Live ETA: uses actual elapsed time for in-progress chunks.
+
+    Completed chunks give us avg_duration.
+    In-progress chunks have already consumed (now - started_at) seconds.
+    Remaining per chunk = max(0, avg_duration - elapsed).
+    Since all chunks run in parallel, ETA = slowest remaining chunk.
+    Queued chunks haven't started yet — treat them as avg_duration remaining.
+    """
+    if n_done == TOTAL_CHUNKS:
+        return 0.0
+
+    now_utc = datetime.now(timezone.utc)
+
+    # Collect completed durations
+    completed_secs: list[float] = []
+    for j in jobs:
+        if j["status"] == "completed" and j.get("started_at") and j.get("completed_at"):
+            s = _parse_dt(j["started_at"])
+            e = _parse_dt(j["completed_at"])
+            completed_secs.append((e - s).total_seconds())
+
+    avg_dur = sum(completed_secs) / len(completed_secs) if completed_secs else None
+
+    remaining: list[float] = []
+
+    for j in jobs:
+        if j["status"] == "completed":
+            continue
+        if j["status"] == "in_progress" and j.get("started_at"):
+            elapsed_chunk = (now_utc - _parse_dt(j["started_at"])).total_seconds()
+            if avg_dur is not None:
+                remaining.append(max(0.0, avg_dur - elapsed_chunk))
+            else:
+                # No completed chunks yet — use elapsed as lower bound proxy
+                remaining.append(elapsed_chunk * 0.5)
+        else:
+            # queued / waiting — full avg_duration expected
+            if avg_dur is not None:
+                remaining.append(avg_dur)
+
+    return max(remaining) if remaining else 0.0
 
 
 # ── Artifact download ─────────────────────────────────────────────────────────
@@ -128,7 +180,7 @@ async def run():
         jobs = get_encode_jobs()
         if jobs:
             break
-        await asyncio.sleep(15)
+        await asyncio.sleep(5)
 
     last_update = 0
 
@@ -137,23 +189,12 @@ async def run():
 
         elapsed = time.time() - start_time
         n_done  = sum(1 for j in jobs if j["status"] == "completed")
+        now_ts  = time.time()
 
-        # ETA: extrapolate from completed jobs' wall times
-        eta = 0.0
-        durations = []
-        for j in jobs:
-            if j["status"] == "completed" and j.get("started_at") and j.get("completed_at"):
-                from datetime import datetime, timezone
-                fmt = "%Y-%m-%dT%H:%M:%SZ"
-                s = datetime.strptime(j["started_at"],   fmt).replace(tzinfo=timezone.utc)
-                e = datetime.strptime(j["completed_at"], fmt).replace(tzinfo=timezone.utc)
-                durations.append((e - s).total_seconds())
-        if durations and n_done < TOTAL_CHUNKS:
-            avg = sum(durations) / len(durations)
-            eta = avg * (TOTAL_CHUNKS - n_done)
+        eta = compute_eta(jobs, n_done)
 
-        # Update TG every 20s
-        if time.time() - last_update >= 20:
+        # Update TG every 5s — fast enough to feel live, safe for TG rate limits
+        if now_ts - last_update >= 5:
             ui = get_parallel_ui(
                 jobs=jobs,
                 total=TOTAL_CHUNKS,
@@ -165,9 +206,10 @@ async def run():
                 preset=final_preset,
                 psy_rd=psy_rd,
                 res_label=res_label,
+                now_utc=datetime.now(timezone.utc),
             )
             await tg_edit(tg_state, tg_ready, ui, reply_markup=buttons)
-            last_update = time.time()
+            last_update = now_ts
 
         if any_encode_job_failed(jobs):
             raise RuntimeError("One or more encode jobs failed — aborting merge.")
@@ -176,7 +218,7 @@ async def run():
             print(f"[coordinator] All {TOTAL_CHUNKS} chunks done. Proceeding to merge.")
             break
 
-        await asyncio.sleep(15)
+        await asyncio.sleep(5)
 
     # ── Phase 2: Download + merge ─────────────────────────────────────────────
     merge_ui = (
@@ -191,7 +233,26 @@ async def run():
 
     download_encoded_chunks()
 
-    output_name = resolve_output_name(file_name)
+    parsed = parse_from_filename(file_name)
+    if parsed:
+        anime_name = parsed["anime_name"]
+        season     = parsed["season"]
+        episode    = parsed["episode"]
+        is_special = parsed["is_special"]
+    else:
+        anime_name = file_name
+        season, episode, is_special = 1, 1, False
+
+    height = src_info.get("height", 0)
+
+    output_name, _, _, _ = resolve_output_name(
+        source      = file_name,
+        anime_name  = anime_name,
+        season      = season,
+        episode     = episode,
+        height      = height,
+        is_special  = is_special,
+    )
     size_mb = merge_chunks(output_name)
 
     # ── Phase 3: Send to TG ───────────────────────────────────────────────────

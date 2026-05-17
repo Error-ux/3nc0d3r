@@ -200,29 +200,29 @@ jobs:
           N="${{ github.event.inputs.chunks }}"
 
           # Write source info for coordinator
-          python3 - << EOF
-import json, subprocess
-cmd = ["ffprobe", "-v", "quiet", "-print_format", "json",
-       "-show_streams", "-show_format", "source.mkv"]
-res = json.loads(subprocess.check_output(cmd).decode())
-vs = next(s for s in res["streams"] if s["codec_type"] == "video")
-fps_raw = vs.get("r_frame_rate", "24/1")
-num, den = fps_raw.split("/")
-fps = round(int(num) / int(den), 3)
-w, h = int(vs.get("width", 0)), int(vs.get("height", 0))
-info = {
-    "resolution": f"{w}x{h}",
-    "width": w,
-    "height": h,
-    "fps": fps,
-    "duration": float(res["format"].get("duration", 0)),
-    "is_hdr": "bt2020" in vs.get("color_primaries", ""),
-    "file_name": "$FILE_NAME",
-}
-with open("source_info.json", "w") as f:
-    json.dump(info, f, indent=2)
-print(json.dumps(info, indent=2))
-EOF
+          python3 - "$FILE_NAME" << 'PYEOF'
+          import json, subprocess, sys
+          fname = sys.argv[1]
+          cmd = ["ffprobe", "-v", "quiet", "-print_format", "json",
+                 "-show_streams", "-show_format", "source.mkv"]
+          res = json.loads(subprocess.check_output(cmd).decode())
+          vs = next(s for s in res["streams"] if s["codec_type"] == "video")
+          fps_raw = vs.get("r_frame_rate", "24/1")
+          num, den = fps_raw.split("/")
+          fps = round(int(num) / int(den), 3)
+          w = int(vs.get("width", 0))
+          h = int(vs.get("height", 0))
+          info = {
+              "resolution": str(w) + "x" + str(h),
+              "width": w, "height": h, "fps": fps,
+              "duration": float(res["format"].get("duration", 0)),
+              "is_hdr": "bt2020" in vs.get("color_primaries", ""),
+              "file_name": fname,
+          }
+          with open("source_info.json", "w") as f:
+              json.dump(info, f, indent=2)
+          print(json.dumps(info, indent=2))
+          PYEOF
 
           # Split into N equal chunks
           DURATION=$(ffprobe -v error -show_entries format=duration \

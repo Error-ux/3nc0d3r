@@ -18,8 +18,6 @@ USER_RES = os.getenv("USER_RES")
 USER_CRF = os.getenv("USER_CRF")
 USER_PRESET = os.getenv("USER_PRESET")
 USER_GRAIN = os.getenv("USER_GRAIN", "10")
-PSY_RD = os.getenv("PSY_RD", "1.5")
-COMPLEX_HVS = os.getenv("COMPLEX_HVS", "1")
 AUDIO_MODE = os.getenv("AUDIO_MODE", "opus")
 AUDIO_BITRATE = os.getenv("AUDIO_BITRATE", "48k")
 RUN_VMAF      = os.getenv("RUN_VMAF",      "true").lower() == "true"

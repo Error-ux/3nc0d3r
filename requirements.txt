@@ -1,5 +1,6 @@
 pyrogram
 tgcrypto
+pycryptodomex
 yt-dlp
 psutil
 anitopy

@@ -22,12 +22,6 @@ on:
       film_grain:
         description: 'Grain'
         default: '0'
-      psy_rd:
-        description: 'Psy-RD strength — higher = sharper/more detail (0.0–6.0)'
-        default: '1.5'
-      complex_hvs:
-        description: 'Complex HVS — amplifies psy-rd; effective at preset 4–6 only (0=off, 1=on)'
-        default: '1'
       audio_mode:
         description: 'Audio Mode'
         default: 'opus'
@@ -109,16 +103,14 @@ jobs:
           key: yt-dlp-standalone-${{ runner.os }}-latest
 
       # ─────────────────────────────────────────────────────────────────────
-      # CACHE: FFmpeg + SVT-AV1-PSYEX build
-      # Cached by a fixed key — bust by bumping the version suffix.
+      # CACHE: FFmpeg binary
       # ─────────────────────────────────────────────────────────────────────
-      - name: 📦 Cache FFmpeg + SVT-AV1-PSYEX Build
+      - name: 📦 Cache FFmpeg Binary
         id: ffmpeg-cache
         uses: actions/cache@v4
         with:
-          path: |
-            /opt/ffenc
-          key: svt-av1-psyex-ffmpeg-${{ runner.os }}-v2
+          path: /usr/local/bin/ff*
+          key: ffmpeg-master-linux64-gpl-${{ runner.os }}
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE: apt packages (aria2, mkvtoolnix, curl)
@@ -129,7 +121,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/apt-cache
-          key: apt-packages-${{ runner.os }}-aria2-mkvtoolnix-curl-v2
+          key: apt-packages-${{ runner.os }}-aria2-mkvtoolnix-curl-v1
 
       - name: 🛠 Install System Tools
         run: |
@@ -146,13 +138,10 @@ jobs:
               https://mkvtoolnix.download/gpg-pub-moritzbunkus.gpg
             echo "deb [signed-by=/usr/share/keyrings/gpg-pub-moritzbunkus.gpg] https://mkvtoolnix.download/ubuntu/ $(lsb_release -cs) main" \
               | sudo tee /etc/apt/sources.list.d/mkvtoolnix.list
-            # build-essential cmake nasm yasm needed for SVT-AV1-PSYEX + FFmpeg compile
-            sudo apt-get update && sudo apt-get install -y \
-              aria2 mkvtoolnix curl \
-              build-essential cmake nasm yasm git pkg-config libopus-dev
+            sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl
             echo "💾 Saving apt packages to cache..."
             mkdir -p /tmp/apt-cache/usr
-            for pkg in aria2 mkvtoolnix curl nasm yasm; do
+            for pkg in aria2 mkvtoolnix curl; do
               dpkg -L $pkg | while read f; do
                 [ -f "$f" ] && sudo cp --parents "$f" /tmp/apt-cache/ 2>/dev/null || true
               done
@@ -193,57 +182,15 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       # ─────────────────────────────────────────────────────────────────────
-      # BUILD: SVT-AV1-PSYEX + FFmpeg (skip if cached)
-      # Uses BlueSwordM's PSYEX fork for psy-rd, complex-hvs, sharp-tx support.
+      # INSTALL: FFmpeg (skip if cached)
       # ─────────────────────────────────────────────────────────────────────
-      - name: 🔨 Build SVT-AV1-PSYEX (if not cached)
+      - name: ⬇️ Download FFmpeg (if not cached)
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
-          git clone --depth=1 https://github.com/BlueSwordM/svt-av1-psyex.git svt_src
-          cmake -B svt_src/Build -S svt_src \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DCMAKE_INSTALL_PREFIX="$PWD/encoder_install"
-          cmake --build svt_src/Build -j$(nproc)
-          cmake --install svt_src/Build
-
-      - name: 🔨 Build FFmpeg with SVT-AV1-PSYEX (if not cached)
-        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth=1 https://github.com/FFmpeg/FFmpeg.git ffmpeg_src
-          cd ffmpeg_src
-          PKG_CONFIG_PATH="$GITHUB_WORKSPACE/encoder_install/lib/pkgconfig:${PKG_CONFIG_PATH}" \
-          ./configure \
-            --prefix="$GITHUB_WORKSPACE/ffmpeg_install" \
-            --enable-libsvtav1 \
-            --enable-libopus \
-            --enable-gpl --enable-version3 \
-            --disable-doc --disable-debug --disable-ffplay \
-            --extra-cflags="-I$GITHUB_WORKSPACE/encoder_install/include" \
-            --extra-ldflags="-L$GITHUB_WORKSPACE/encoder_install/lib" \
-            --extra-libs="-lpthread -lm"
-          make -j$(nproc)
-          make install
-
-      - name: 📦 Install FFmpeg distribution to /opt/ffenc (if not cached)
-        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p /opt/ffenc/bin /opt/ffenc/lib
-          cp ffmpeg_install/bin/ffmpeg  /opt/ffenc/bin/ && strip /opt/ffenc/bin/ffmpeg
-          cp ffmpeg_install/bin/ffprobe /opt/ffenc/bin/ && strip /opt/ffenc/bin/ffprobe
-          ldd ffmpeg_install/bin/ffmpeg \
-            | awk '/=> \// {print $3}' \
-            | grep -Ev 'libstdc\+\+\.so|libgcc_s\.so|libc\.so\.|libm\.so\.|libdl\.so\.|libpthread\.so\.|librt\.so\.|ld-linux' \
-            | xargs -I{} cp -v {} /opt/ffenc/lib/ 2>/dev/null || true
-          echo "📦 FFmpeg dist: $(du -sh /opt/ffenc | cut -f1)"
-
-      - name: 🔗 Expose FFmpeg on PATH
-        run: |
-          echo "/opt/ffenc/bin" >> $GITHUB_PATH
-          echo "LD_LIBRARY_PATH=/opt/ffenc/lib" >> $GITHUB_ENV
-          chmod +x /opt/ffenc/bin/ffmpeg /opt/ffenc/bin/ffprobe
-          ffmpeg  -version | head -3
-          ffprobe -version | head -1
+          wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
+          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
+          rm -rf ffmpeg-master-latest-linux64-gpl*
 
       - name: 📁 Setup Session Dir
         run: mkdir -p tg_session_dir
@@ -313,8 +260,6 @@ jobs:
           USER_CRF: ${{ github.event.inputs.custom_crf }}
           USER_PRESET: ${{ github.event.inputs.custom_preset }}
           USER_GRAIN: ${{ github.event.inputs.film_grain }}
-          PSY_RD: ${{ github.event.inputs.psy_rd }}
-          COMPLEX_HVS: ${{ github.event.inputs.complex_hvs }}
           AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}

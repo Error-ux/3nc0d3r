@@ -6,6 +6,7 @@ import asyncio
 import os
 import subprocess
 import json
+import shutil
 from urllib.parse import quote
 import time
 from collections import Counter
@@ -100,9 +101,6 @@ async def get_vmaf(output_file, crop_val, width, height, duration, fps, kv_write
         for i in range(6)
     ]
     select_filter   = f"select='{'+'.join(select_parts)}',setpts=N/FRAME_RATE/TB"
-    # Clamp fps for progress math — VFR sources can report wildly high r_frame_rate
-    # values (e.g. 60000/1001 on a 23.976 stream) which would inflate total_vmaf_frames
-    # and cause progress% to stall near 0 the entire run.
     fps_clamped       = min(fps, 60.0)
     total_vmaf_frames = int(30 * fps_clamped)
     ref_filters     = f"crop={crop_val},{select_filter}" if crop_val else select_filter
@@ -148,7 +146,6 @@ async def get_vmaf(output_file, crop_val, width, height, duration, fps, kv_write
                             elapsed = now - start_time
                             speed   = curr_frame / elapsed if elapsed > 0 else 0
                             eta     = (total_vmaf_frames - curr_frame) / speed if speed > 0 else 0
-                            # Reuses the same progress key so /p shows VMAF phase inline
                             await kv_writer({
                                 "phase":        "vmaf",
                                 "file":         output_file,
@@ -169,12 +166,9 @@ async def get_vmaf(output_file, crop_val, width, height, duration, fps, kv_write
                 line     = await proc.stderr.readline()
                 if not line: break
                 line_str = line.decode('utf-8', errors='ignore').strip()
-                # libvmaf v1: "VMAF score: 93.45"
-                # libvmaf v2: "[libvmaf] VMAF score: 93.45" or "VMAF score = 93.45"
                 m = _re.search(r"VMAF score[:\s=]+([0-9]+(?:\.[0-9]+)?)", line_str, _re.IGNORECASE)
                 if m:
                     vmaf_score = m.group(1)
-                # SSIM: "SSIM Y:0.99 U:0.99 V:0.99 All:0.99 (inf)"
                 m = _re.search(r"All:([0-9]+(?:\.[0-9]+)?)", line_str)
                 if m and "SSIM" in line_str:
                     ssim_score = m.group(1)
@@ -187,10 +181,6 @@ async def get_vmaf(output_file, crop_val, width, height, duration, fps, kv_write
         return "N/A", "N/A"
 
 
-
-
-
-
 async def upload_to_cloud(filepath, app=None, chat_id=None, status_msg=None):
     """
     Uploads to Gofile (primary) and returns a dict:
@@ -201,7 +191,6 @@ async def upload_to_cloud(filepath, app=None, chat_id=None, status_msg=None):
     """
     filename = os.path.basename(filepath)
 
-    # ── Step 1: Get best upload server ──────────────────────────────────────
     try:
         server_proc = await asyncio.create_subprocess_exec(
             "curl", "-s", "https://api.gofile.io/servers",
@@ -219,7 +208,6 @@ async def upload_to_cloud(filepath, app=None, chat_id=None, status_msg=None):
         print(f"[Gofile] Step 1 failed: {e}")
         return await _litterbox_fallback(filepath)
 
-    # ── Step 2: Upload file with progress ───────────────────────────────────
     try:
         file_size     = os.path.getsize(filepath)
         last_edit     = 0
@@ -232,16 +220,13 @@ async def upload_to_cloud(filepath, app=None, chat_id=None, status_msg=None):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
 
-        # Read stderr for curl progress while stdout accumulates JSON response
         uploaded_bytes = 0
         start_up       = time.time()
 
         async def _read_progress():
             nonlocal uploaded_bytes, last_edit, last_pct
             async for line in upload_proc.stderr:
-                # curl --progress-bar writes lines like: "##  3.1%  ..."
                 text = line.decode("utf-8", errors="ignore").strip()
-                # parse percentage from curl progress output
                 parts = text.split()
                 for part in parts:
                     if part.endswith("%"):
@@ -287,8 +272,6 @@ async def upload_to_cloud(filepath, app=None, chat_id=None, status_msg=None):
 
         page_url = upload_data["data"]["downloadPage"]
 
-        # Use downloadPage only — direct URL is tied to the upload server node
-        # which may rotate or differ from the CDN edge serving downloads.
         return {
             "direct": page_url,
             "page":   page_url,
@@ -319,3 +302,131 @@ async def _litterbox_fallback(filepath):
         print(f"[Litterbox] Fallback failed: {e}")
 
     return {"direct": None, "page": None, "source": "error"}
+
+
+# ---------------------------------------------------------------------------
+# HELPERS PORTED FROM zip2/utils.py
+# Used by split.py, encode.py, merge.py, batch_runner.py, batch_monitor.py
+# ---------------------------------------------------------------------------
+
+FFMPEG  = "ffmpeg"
+FFPROBE = "ffprobe"
+
+
+def check_ffmpeg() -> None:
+    """Verify ffmpeg + ffprobe are installed and libsvtav1 is available."""
+    for tool in (FFMPEG, FFPROBE):
+        if shutil.which(tool) is None:
+            print(f"[ERROR] '{tool}' is not installed or not in PATH.")
+            sys.exit(1)
+    # Verify libsvtav1 encoder is present
+    result = subprocess.run(
+        [FFMPEG, "-encoders"], capture_output=True, text=True
+    )
+    if "libsvtav1" not in result.stdout:
+        print("[ERROR] ffmpeg build does not include libsvtav1.")
+        sys.exit(1)
+
+
+def get_duration(path) -> float:
+    """Return duration of a media file in seconds via ffprobe."""
+    result = subprocess.run(
+        [FFPROBE, "-v", "error",
+         "-analyzeduration", "100M", "-probesize", "100M",
+         "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1",
+         str(path)],
+        capture_output=True, text=True, check=True,
+    )
+    return float(result.stdout.strip())
+
+
+def get_frame_count(path) -> int:
+    """Return total video frame count via ffprobe."""
+    result = subprocess.run(
+        [FFPROBE, "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=nb_frames",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    raw = result.stdout.strip().splitlines()
+    try:
+        return int(raw[0]) if raw else 0
+    except (ValueError, IndexError):
+        return 0
+
+
+def get_subtitle_maps(path) -> list:
+    """
+    Return ffmpeg -map args for text-based subtitle streams only.
+    PGS and DVD bitmap formats are excluded.
+    """
+    skip   = {"hdmv_pgs_subtitle", "dvd_subtitle", "pgssub", "hdmv_pgs_bitmap"}
+    result = subprocess.run(
+        [FFPROBE, "-v", "error", "-select_streams", "s",
+         "-show_entries", "stream=codec_name",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    maps = []
+    for i, codec in enumerate(result.stdout.strip().splitlines()):
+        if codec.strip().lower() not in skip:
+            maps.extend(["-map", f"0:s:{i}"])
+    return maps
+
+
+def get_all_subtitle_info(path) -> list:
+    """
+    Return a list of subtitle stream dicts with index, codec, lang, title.
+    Used for PGS detection and sub-title renaming.
+    """
+    result = subprocess.run(
+        [FFPROBE, "-v", "quiet",
+         "-print_format", "json",
+         "-show_streams", "-select_streams", "s",
+         str(path)],
+        capture_output=True, text=True,
+    )
+    try:
+        data = json.loads(result.stdout)
+    except Exception:
+        return []
+    subs = []
+    for st in data.get("streams", []):
+        tags    = st.get("tags", {})
+        tag_low = {k.lower(): v for k, v in tags.items()}
+        subs.append({
+            "index":   st.get("index", 0),
+            "codec":   st.get("codec_name", ""),
+            "lang":    tag_low.get("language", "und"),
+            "title":   tag_low.get("title",    ""),
+            "forced":  bool(st.get("disposition", {}).get("forced", 0)),
+            "default": bool(st.get("disposition", {}).get("default", 0)),
+        })
+    return subs
+
+
+def verify_mkv_magic(path) -> bool:
+    """Check that a file starts with the MKV magic bytes (1a 45 df a3)."""
+    try:
+        return Path(path).read_bytes()[:4].hex() == "1a45dfa3"
+    except OSError:
+        return False
+
+
+def fmt_size(mb: float) -> str:
+    """Human-readable file size from MB value."""
+    return f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{mb:.0f} MB"
+
+
+def fmt_duration(secs: float) -> str:
+    """Format seconds as H:MM:SS or M:SS."""
+    m, s = divmod(int(secs), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def progress_bar(pct: float, width: int = 20) -> str:
+    """Simple block progress bar using existing 3nc0d3r characters."""
+    filled = int(pct / 100 * width)
+    return "▰" * filled + "▱" * (width - filled)

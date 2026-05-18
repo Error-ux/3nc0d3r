@@ -214,48 +214,18 @@ async def main():
         la_depth = 40
     print(f"[svtav1] la-depth={la_depth} (duration={duration:.0f}s)")
 
-    # -- SVT-AV1-PSYEX PARAMETERS --
-    # Psychovisual encode tuned for anime at high CRF (45–50) / preset 4–6.
-    #
-    # tune=0         → fidelity/anime mode; preserves flat areas and line art
-    # psy-rd         → psychovisual RD — resists mushy compression artifacts
-    # complex-hvs    → massively amplifies psy-rd; most effective at preset 4–6
-    #                  (PSYEX docs warn to disable above preset 6)
-    # sharp-tx=1     → boosts psy-rd at transform level (PSYEX default)
-    # noise-adaptive-filtering=4 → CDEF always on; keeps anime lines clean
-    # qm-min=8       → sharper, more consistent visuals at no speed cost
-    # qp-scale-compress-strength=2 → smoother quality on fast-motion frames
-    #
-    # Runner-safe params kept from original:
-    # pin=0          → required on GitHub Actions VMs (no CPU affinity support)
-    # lp=2           → better workload distribution on 4-core runners
-    # tile-columns=2 → 4 tiles; parallelises frame processing across cores
-    # enable-overlays=1 / scd=1 → scene-change detection + overlay frames
-
-    try:
-        psy_rd_val = float(config.PSY_RD or 1.5)
-        psy_rd_val = max(0.0, min(6.0, psy_rd_val))
-    except (ValueError, TypeError):
-        psy_rd_val = 1.5
-
-    try:
-        complex_hvs_val = int(config.COMPLEX_HVS or 1)
-        complex_hvs_val = 1 if complex_hvs_val else 0
-        # complex-hvs only effective at preset 4–6; force off above 6
-        if int(final_preset) > 6:
-            complex_hvs_val = 0
-            print(f"[psyex] complex-hvs forced off (preset {final_preset} > 6)")
-    except (ValueError, TypeError):
-        complex_hvs_val = 1
-
-    print(f"[psyex] psy-rd={psy_rd_val} complex-hvs={complex_hvs_val} la-depth={la_depth}")
-
+    # -- SVT-AV1 PARAMETERS --
+    # Optimizing for 4-core GitHub Action Runners:
+    # lp=2: Better workload distribution than lp=0 on 4 cores.
+    # tile-columns=2: 4 tiles — parallelizes frame processing across cores.
+    # fast-decode=1: Speeds up the internal loops without hitting quality.
     svtav1_tune = (
-        f"tune=0:film-grain={grain_val}:enable-overlays=1:scd=1:"
-        f"psy-rd={psy_rd_val}:complex-hvs={complex_hvs_val}:"
-        f"sharp-tx=1:noise-adaptive-filtering=4:"
-        f"qm-min=8:qp-scale-compress-strength=2:"
-        f"pin=0:lp=2:tile-columns=2:tile-rows=1:la-depth={la_depth}"
+        f"tune=2:film-grain={grain_val}:enable-overlays=1:"
+        f"aq-mode=2:variance-boost-strength=3:variance-octile=6:"
+        f"enable-qm=1:qm-min=0:qm-max=8:sharpness=1:"
+        f"scd=1:scd-sensitivity=10:enable-tf=1:"
+        f"pin=0:lp=2:tile-columns=2:tile-rows=1:la-depth={la_depth}:"
+        f"fast-decode=1"
     )
 
 

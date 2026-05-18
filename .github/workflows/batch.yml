@@ -1,0 +1,670 @@
+name: Batch Encode
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_urls:
+        description: "URLs — one per line (max 20 for false, max 5 for true)"
+        required: true
+      episode_start:
+        description: "Starting episode number"
+        default: "1"
+      fast_encode:
+        description: "fast_encode (true = chunk matrix | false = one runner per episode)"
+        default: "false"
+      chunk_count:
+        description: "Total encode slots to distribute (max 19, fast_encode=true only)"
+        default: "19"
+
+      # ── Encode settings ────────────────────────────────────────────────
+      anime_name:
+        description: "Anime name (leave blank to auto-detect)"
+        default: ""
+      season:
+        description: "Season number"
+        default: "1"
+      audio_type:
+        description: "Audio type (Auto / Sub / Dual / Tri / Multi)"
+        default: "Auto"
+      content_type:
+        description: "Content type (Anime / Donghua / Hentai / HMV / AMV)"
+        default: "Anime"
+      custom_crf:
+        description: "CRF value"
+        default: "50"
+      custom_preset:
+        description: "SVT-AV1 preset (0–13)"
+        default: "6"
+      film_grain:
+        description: "Film grain synthesis (0–50)"
+        default: "0"
+      res_choice:
+        description: "Output resolution height (e.g. 1080, leave blank = auto)"
+        default: ""
+      audio_mode:
+        description: "Audio codec (opus / aac)"
+        default: "opus"
+      audio_bitrate:
+        description: "Audio bitrate (e.g. 64k)"
+        default: "64k"
+      run_vmaf:
+        description: "Run VMAF analysis (true / false)"
+        default: "true"
+      run_upload:
+        description: "Upload to Gofile (true / false)"
+        default: "true"
+      encoder_title:
+        description: "MKV Title tag"
+        default: "zub'sEncodes"
+      sub_tracks:
+        description: "Sub track labels (e.g. English, Arabic)"
+        default: ""
+      audio_tracks:
+        description: "Audio track labels (e.g. Japanese, English (Dub))"
+        default: ""
+
+# ─── Shared env for all jobs ──────────────────────────────────────────────────
+env:
+  API_ID:         ${{ secrets.TG_API_ID }}
+  API_HASH:       ${{ secrets.TG_API_HASH }}
+  BOT_TOKEN:      ${{ secrets.TG_BOT_TOKEN }}
+  CHAT_ID:        ${{ secrets.TG_CHAT_ID }}
+  TG_API_ID:      ${{ secrets.TG_API_ID }}
+  TG_API_HASH:    ${{ secrets.TG_API_HASH }}
+  TG_BOT_TOKEN:   ${{ secrets.TG_BOT_TOKEN }}
+  TG_CHAT_ID:     ${{ secrets.TG_CHAT_ID }}
+  TG_CHANNEL_ID:  ${{ secrets.TG_CHANNEL_ID }}
+  GOFILE_TOKEN:   ${{ secrets.GOFILE_TOKEN }}
+
+# ─── prepare ──────────────────────────────────────────────────────────────────
+jobs:
+  prepare:
+    name: Prepare Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      mode:                ${{ steps.build.outputs.mode }}
+      episode_matrix_json: ${{ steps.build.outputs.episode_matrix_json }}
+      chunk_matrix_json:   ${{ steps.build.outputs.chunk_matrix_json }}
+      episode_list_json:   ${{ steps.build.outputs.episode_list_json }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build matrices
+        id: build
+        env:
+          VIDEO_URLS:    ${{ inputs.video_urls }}
+          EPISODE_START: ${{ inputs.episode_start }}
+          FAST_ENCODE:   ${{ inputs.fast_encode }}
+          CHUNK_COUNT:   ${{ inputs.chunk_count }}
+          ANIME_NAME:    ${{ inputs.anime_name }}
+          SEASON:        ${{ inputs.season }}
+          CONTENT_TYPE:  ${{ inputs.content_type }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, math
+
+          raw_urls     = os.environ.get("VIDEO_URLS", "").strip()
+          ep_start     = int(os.environ.get("EPISODE_START", "1"))
+          fast_encode  = os.environ.get("FAST_ENCODE", "false").lower() == "true"
+          chunk_count  = int(os.environ.get("CHUNK_COUNT", "19"))
+          anime_name   = os.environ.get("ANIME_NAME", "")
+          season       = os.environ.get("SEASON", "1")
+          content_type = os.environ.get("CONTENT_TYPE", "Anime")
+
+          urls = [u.strip() for u in raw_urls.splitlines() if u.strip()]
+          if not urls:
+              print("ERROR: No URLs provided.")
+              exit(1)
+
+          # Build episode list
+          episodes = []
+          for i, url in enumerate(urls):
+              ep_num = ep_start + i
+              if anime_name:
+                  out_name = f"{anime_name} S{int(season):02d}E{ep_num:02d}"
+              else:
+                  out_name = f"Episode {ep_num}"
+              episodes.append({
+                  "url":     url,
+                  "episode": ep_num,
+                  "output_name": out_name,
+              })
+
+          gh_output = os.environ.get("GITHUB_OUTPUT", "")
+
+          if not fast_encode:
+              # ── Episode matrix (one runner per episode) ──────────────
+              ep_matrix = [
+                  {
+                      "url":         ep["url"],
+                      "episode":     str(ep["episode"]),
+                      "output_name": ep["output_name"],
+                  }
+                  for ep in episodes
+              ]
+              with open(gh_output, "a") as f:
+                  f.write(f"mode=episode\n")
+                  f.write(f"episode_matrix_json={json.dumps(ep_matrix)}\n")
+                  f.write(f"chunk_matrix_json=[]\n")
+                  f.write(f"episode_list_json={json.dumps(ep_matrix)}\n")
+              print(f"Mode: episode  Episodes: {len(ep_matrix)}")
+
+          else:
+              # ── Chunk matrix (split episodes across 19 encode slots) ──
+              N          = len(episodes)
+              total      = chunk_count  # default 19
+              base       = total // N
+              remainder  = total % N
+
+              ep_chunks = []  # per-episode chunk counts
+              for i in range(N):
+                  chunks = base + (1 if i < remainder else 0)
+                  ep_chunks.append(chunks)
+
+              # Split job matrix (one runner per episode)
+              split_matrix = [
+                  {
+                      "url":                    ep["url"],
+                      "episode":                str(ep["episode"]),
+                      "output_name":            ep["output_name"],
+                      "chunks_for_this_episode": ep_chunks[i],
+                  }
+                  for i, ep in enumerate(episodes)
+              ]
+
+              # Encode-chunks matrix (one runner per chunk across all episodes)
+              chunk_matrix = []
+              for i, ep in enumerate(episodes):
+                  for c in range(ep_chunks[i]):
+                      chunk_matrix.append({
+                          "episode":                str(ep["episode"]),
+                          "chunk_index":            c,
+                          "chunks_for_this_episode": ep_chunks[i],
+                          "output_name":            ep["output_name"],
+                      })
+
+              # Episode list (for finalize + monitor)
+              ep_list = [
+                  {
+                      "episode":                str(ep["episode"]),
+                      "chunks_for_this_episode": ep_chunks[i],
+                      "output_name":            ep["output_name"],
+                  }
+                  for i, ep in enumerate(episodes)
+              ]
+
+              print(f"Mode: chunk  Episodes: {N}  Chunks: {ep_chunks}  Total jobs: {len(chunk_matrix)}")
+
+              with open(gh_output, "a") as f:
+                  f.write(f"mode=chunk\n")
+                  f.write(f"episode_matrix_json={json.dumps(split_matrix)}\n")
+                  f.write(f"chunk_matrix_json={json.dumps(chunk_matrix)}\n")
+                  f.write(f"episode_list_json={json.dumps(ep_list)}\n")
+          PYEOF
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODE: fast_encode = false
+# ─────────────────────────────────────────────────────────────────────────────
+
+  encode-episodes:
+    name: Encode Episodes
+    needs: prepare
+    if: needs.prepare.outputs.mode == 'episode'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.episode_matrix_json) }}
+      fail-fast: false
+
+    env:
+      VIDEO_URL:     ${{ matrix.url }}
+      EPISODE:       ${{ matrix.episode }}
+      FILE_NAME:     output_ep${{ matrix.episode }}.mkv
+      ANIME_NAME:    ${{ inputs.anime_name }}
+      SEASON:        ${{ inputs.season }}
+      AUDIO_TYPE:    ${{ inputs.audio_type }}
+      CONTENT_TYPE:  ${{ inputs.content_type }}
+      USER_CRF:      ${{ inputs.custom_crf }}
+      USER_PRESET:   ${{ inputs.custom_preset }}
+      USER_GRAIN:    ${{ inputs.film_grain }}
+      USER_RES:      ${{ inputs.res_choice }}
+      AUDIO_MODE:    ${{ inputs.audio_mode }}
+      AUDIO_BITRATE: ${{ inputs.audio_bitrate }}
+      RUN_VMAF:      ${{ inputs.run_vmaf }}
+      RUN_UPLOAD:    ${{ inputs.run_upload }}
+      ENCODER_TITLE: ${{ inputs.encoder_title }}
+      SUB_TRACKS:    ${{ inputs.sub_tracks }}
+      AUDIO_TRACKS:  ${{ inputs.audio_tracks }}
+      SESSION_NAME:  enc_session
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg mkvtoolnix aria2 curl
+          pip install -r requirements.txt --quiet
+
+      - name: Verify SVT-AV1
+        run: ffmpeg -encoders 2>&1 | grep libsvtav1
+
+      - name: Download
+        run: python3 batch_runner.py --phase download
+        continue-on-error: false
+
+      - name: Probe
+        run: python3 batch_runner.py --phase probe
+
+      - name: Post opening message
+        run: python3 batch_runner.py --phase notify_start
+
+      - name: Encode
+        run: python3 batch_runner.py --phase encode
+
+      - name: VMAF
+        if: inputs.run_vmaf == 'true'
+        run: python3 batch_runner.py --phase vmaf
+
+      - name: Upload
+        if: inputs.run_upload == 'true'
+        run: python3 batch_runner.py --phase upload
+
+      - name: Final report
+        if: success()
+        run: python3 batch_runner.py --phase notify_end
+
+      - name: Failure report
+        if: failure()
+        run: python3 batch_runner.py --phase notify_fail --fail-step "${{ job.status }}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODE: fast_encode = true  —  Step 1: split episodes
+# ─────────────────────────────────────────────────────────────────────────────
+
+  split-episodes:
+    name: Split Episodes
+    needs: prepare
+    if: needs.prepare.outputs.mode == 'chunk'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.episode_matrix_json) }}
+      fail-fast: false
+
+    env:
+      VIDEO_URL:     ${{ matrix.url }}
+      EPISODE:       ${{ matrix.episode }}
+      ANIME_NAME:    ${{ inputs.anime_name }}
+      SEASON:        ${{ inputs.season }}
+      CONTENT_TYPE:  ${{ inputs.content_type }}
+      USER_CRF:      ${{ inputs.custom_crf }}
+      USER_PRESET:   ${{ inputs.custom_preset }}
+      USER_GRAIN:    ${{ inputs.film_grain }}
+      USER_RES:      ${{ inputs.res_choice }}
+      AUDIO_BITRATE: ${{ inputs.audio_bitrate }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg aria2 curl
+          pip install -r requirements.txt --quiet
+
+      - name: Download
+        run: |
+          export FILE_NAME="source_ep${{ matrix.episode }}.mkv"
+          python3 download.py
+          # download.py always outputs to source.mkv
+          ls -lh source.mkv
+
+      - name: Probe + write encode_params.json
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+          from utils.media import get_video_info, get_crop_params
+
+          duration, width, height, is_hdr, total_frames, channels, fps_val = get_video_info()
+
+          res = os.environ.get("USER_RES", "").strip()
+          if not res and height > 1080:
+              res = "1080"
+
+          from utils.media import get_crop_params
+          import config
+          crop_val = get_crop_params(duration)
+
+          params = {
+              "duration":      duration,
+              "width":         width,
+              "height":        height,
+              "is_hdr":        is_hdr,
+              "total_frames":  total_frames,
+              "fps_val":       fps_val,
+              "crop_val":      crop_val,
+              "crf":           int(os.environ.get("USER_CRF",    "50")),
+              "preset":        int(os.environ.get("USER_PRESET", "6")),
+              "grain":         int(os.environ.get("USER_GRAIN",  "0")),
+              "res":           res,
+              "audio_bitrate": os.environ.get("AUDIO_BITRATE",   "64k"),
+              "episode":       os.environ.get("EPISODE",          "1"),
+          }
+          with open("encode_params.json", "w") as f:
+              json.dump(params, f, indent=2)
+          print(f"[probe] ✅  encode_params.json written — {width}x{height}  hdr={is_hdr}  crop={crop_val}")
+          PYEOF
+
+      - name: Split into chunks
+        run: |
+          python3 split.py source.mkv \
+            --chunks ${{ matrix.chunks_for_this_episode }} \
+            --out-dir chunks/
+
+      - name: Upload chunks artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: episode-${{ matrix.episode }}-chunks
+          path: |
+            chunks/part_*.mkv
+            encode_params.json
+            source.mkv
+          retention-days: 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODE: fast_encode = true  —  Step 2a: encode chunks (silent, no TG)
+# ─────────────────────────────────────────────────────────────────────────────
+
+  encode-chunks:
+    name: Encode Chunks
+    needs: [prepare, split-episodes]
+    if: needs.prepare.outputs.mode == 'chunk'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.chunk_matrix_json) }}
+      fail-fast: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          pip install -r requirements.txt --quiet
+
+      - name: Verify SVT-AV1
+        run: ffmpeg -encoders 2>&1 | grep libsvtav1
+
+      - name: Download episode chunks artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: episode-${{ matrix.episode }}-chunks
+          path: chunks/
+
+      - name: Encode chunk ${{ matrix.chunk_index }}
+        run: |
+          python3 encode.py \
+            chunks/part_$(printf "%02d" ${{ matrix.chunk_index }}).mkv \
+            --params-file chunks/encode_params.json \
+            --crf      ${{ inputs.custom_crf }} \
+            --preset   ${{ inputs.custom_preset }} \
+            --grain    ${{ inputs.film_grain }} \
+            --res      "${{ inputs.res_choice }}" \
+            --audio-bitrate ${{ inputs.audio_bitrate }} \
+            --out-dir  encoded/
+
+      - name: Upload encoded chunk artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: episode-${{ matrix.episode }}-encoded-chunk-${{ matrix.chunk_index }}
+          path: encoded/part_${{ matrix.chunk_index }}-encoded.mkv
+          retention-days: 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODE: fast_encode = true  —  Step 2b: monitor (concurrent with encode-chunks)
+# ─────────────────────────────────────────────────────────────────────────────
+
+  monitor:
+    name: Monitor Progress
+    needs: [prepare, split-episodes]
+    if: needs.prepare.outputs.mode == 'chunk'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt --quiet
+
+      - name: Run monitor
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          EPISODE_LIST_JSON: ${{ needs.prepare.outputs.episode_list_json }}
+        run: python3 batch_monitor.py
+
+      - name: Upload message_ids artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-message-ids
+          path: message_ids.json
+          retention-days: 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODE: fast_encode = true  —  Step 3: finalize (merge + VMAF + upload + TG)
+# ─────────────────────────────────────────────────────────────────────────────
+
+  finalize:
+    name: Finalize Episodes
+    needs: [prepare, encode-chunks, monitor]
+    if: |
+      needs.prepare.outputs.mode == 'chunk' &&
+      !cancelled()
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.episode_list_json) }}
+      fail-fast: false
+
+    env:
+      EPISODE:       ${{ matrix.episode }}
+      ANIME_NAME:    ${{ inputs.anime_name }}
+      SEASON:        ${{ inputs.season }}
+      AUDIO_TYPE:    ${{ inputs.audio_type }}
+      CONTENT_TYPE:  ${{ inputs.content_type }}
+      ENCODER_TITLE: ${{ inputs.encoder_title }}
+      SUB_TRACKS:    ${{ inputs.sub_tracks }}
+      AUDIO_TRACKS:  ${{ inputs.audio_tracks }}
+      RUN_VMAF:      ${{ inputs.run_vmaf }}
+      RUN_UPLOAD:    ${{ inputs.run_upload }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg mkvtoolnix
+          pip install -r requirements.txt --quiet
+
+      - name: Download encoded chunks (all parts)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: episode-${{ matrix.episode }}-encoded-chunk-*
+          path: encoded-parts/
+          merge-multiple: true
+
+      - name: Download source + encode_params
+        uses: actions/download-artifact@v4
+        with:
+          name: episode-${{ matrix.episode }}-chunks
+          path: source-ep/
+
+      - name: Download message_ids
+        uses: actions/download-artifact@v4
+        with:
+          name: monitor-message-ids
+          path: ./
+
+      - name: Symlink source.mkv for VMAF
+        run: |
+          cp source-ep/source.mkv source.mkv
+          cp source-ep/encode_params.json encode_params.json
+
+      - name: Validate chunks
+        run: |
+          echo "Encoded chunks found:"
+          ls -lh encoded-parts/ || true
+          COUNT=$(ls encoded-parts/*-encoded.mkv 2>/dev/null | wc -l)
+          EXPECTED=${{ matrix.chunks_for_this_episode }}
+          echo "Found: $COUNT / Expected: $EXPECTED"
+          if [ "$COUNT" -ne "$EXPECTED" ]; then
+            echo "ERROR: chunk count mismatch"
+            exit 1
+          fi
+
+      - name: Merge + VMAF + Upload + Report
+        run: |
+          python3 merge.py \
+            --enc-dir      encoded-parts/ \
+            --output       "episode_${{ matrix.episode }}" \
+            --expected     ${{ matrix.chunks_for_this_episode }} \
+            --episode      ${{ matrix.episode }} \
+            --message-ids  message_ids.json \
+            --params-file  encode_params.json \
+            --crf          ${{ inputs.custom_crf }} \
+            --preset       ${{ inputs.custom_preset }} \
+            --grain        ${{ inputs.film_grain }} \
+            --audio-bitrate ${{ inputs.audio_bitrate }} \
+            --encoder-title "${{ inputs.encoder_title }}" \
+            --anime-name   "${{ inputs.anime_name }}" \
+            --season       "${{ inputs.season }}" \
+            --audio-type   "${{ inputs.audio_type }}" \
+            --content-type "${{ inputs.content_type }}" \
+            --sub-tracks   "${{ inputs.sub_tracks }}" \
+            --audio-tracks "${{ inputs.audio_tracks }}" \
+            ${{ inputs.run_vmaf == 'true' && '--run-vmaf' || '' }} \
+            ${{ inputs.run_upload == 'true' && '--run-upload' || '' }}
+
+      - name: Report failure to channel
+        if: failure()
+        env:
+          EPISODE: ${{ matrix.episode }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, asyncio
+          import config
+
+          mid = 0
+          try:
+              ids = json.loads(open("message_ids.json").read())
+              mid = int(ids.get(os.environ.get("EPISODE","1"), 0))
+          except Exception:
+              pass
+
+          gh_repo = os.environ.get("GITHUB_REPOSITORY","")
+          run_id  = os.environ.get("GITHUB_RUN_ID","")
+          episode = os.environ.get("EPISODE","?")
+          log_url = f"https://github.com/{gh_repo}/actions/runs/{run_id}"
+
+          text = (
+              f"<code>┌─── ❌ [ FINALIZE FAILED ] ──────────────┐\n"
+              f"│ Episode: {episode}\n"
+              f"│ Merge / VMAF / Upload step failed.\n"
+              f"│ Encoded chunks artifact preserved 24h.\n"
+              f"└────────────────────────────────────────────┘</code>\n"
+              f"<a href='{log_url}'>📋 View Actions Log</a>"
+          )
+
+          bot_token  = os.environ.get("TG_BOT_TOKEN", config.BOT_TOKEN)
+          channel_id = int(os.environ.get("TG_CHANNEL_ID", "0"))
+          alert_id   = int(os.environ.get("TG_CHAT_ID", str(config.CHAT_ID)))
+
+          async def _notify():
+              from pyrogram import Client, enums
+              async with Client("fail_bot", bot_token=bot_token,
+                                api_id=config.API_ID, api_hash=config.API_HASH) as app:
+                  if mid and channel_id:
+                      await app.edit_message_text(channel_id, mid, text,
+                                                  parse_mode=enums.ParseMode.HTML)
+                  if alert_id:
+                      await app.send_message(alert_id, text,
+                                             parse_mode=enums.ParseMode.HTML)
+
+          asyncio.run(_notify())
+          PYEOF

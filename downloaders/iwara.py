@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))  # repo root
+
 #!/usr/bin/env python3
 """
 iwara.py
@@ -27,16 +31,12 @@ Environment variables (pipeline):
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))  # repo root
-
 import hashlib
 import json
 import os
 import re
 import subprocess
+import sys
 import time
 from urllib.error import HTTPError
 from urllib.parse import urlparse, parse_qs, quote

@@ -50,15 +50,12 @@ async def main():
         print(f"CRITICAL: Invalid Environment Variables. {e}")
         sys.exit(1)
     
-    # Keep sessions in tg_session_dir so the workflow cache picks them up.
-    # actions/cache can restore directories as read-only — chmod after makedirs
-    # ensures Pyrogram can always create/write the SQLite session file.
-    session_dir = "tg_session_dir"
+    # Use /tmp for the Pyrogram session — guaranteed writable on every runner.
+    # actions/cache restores tg_session_dir with read-only permissions on some
+    # runners, which makes SQLite unable to create the .session file there.
+    # Bot token re-auth is automatic (~1s), so losing session cache is fine.
+    session_dir = "/tmp/tg_sessions"
     os.makedirs(session_dir, exist_ok=True)
-    try:
-        os.chmod(session_dir, 0o755)
-    except OSError:
-        pass
 
     # Derive lane from run number — 20 lanes (A–T) via run_number % 20
     # so each concurrent encode gets its own session with no cross-lane blocking.

@@ -134,6 +134,7 @@ async def main():
                         parse_mode=enums.ParseMode.HTML
                     )
                     sys.exit(1)
+                print(f"[DBG] download_media returned: {dl_result!r}", flush=True)
                 if dl_result is None:
                     err_msg = "download_media returned None — message media may be expired or the bot lacks access."
                     print(f"❌ {err_msg}")
@@ -143,6 +144,12 @@ async def main():
                         parse_mode=enums.ParseMode.HTML
                     )
                     sys.exit(1)
+                # Pyrogram may save to a different path/extension than requested.
+                # Normalize to ./source.mkv so the rest of the pipeline always finds it.
+                dl_result = str(dl_result)
+                if os.path.abspath(dl_result) != os.path.abspath("./source.mkv"):
+                    print(f"[DBG] Renaming {dl_result!r} → ./source.mkv", flush=True)
+                    os.replace(dl_result, "./source.mkv")
 
             elif "tg_file:" in url:
                 raw_data = url.replace("tg_file:", "")
@@ -168,6 +175,7 @@ async def main():
                         parse_mode=enums.ParseMode.HTML
                     )
                     sys.exit(1)
+                print(f"[DBG] download_media returned: {dl_result!r}", flush=True)
                 if dl_result is None:
                     err_msg = "download_media returned None — file_id may be expired, or the bot lacks access to this file."
                     print(f"❌ {err_msg}")
@@ -177,6 +185,12 @@ async def main():
                         parse_mode=enums.ParseMode.HTML
                     )
                     sys.exit(1)
+                # Pyrogram may save to a different path/extension than requested.
+                # Normalize to ./source.mkv so the rest of the pipeline always finds it.
+                dl_result = str(dl_result)
+                if os.path.abspath(dl_result) != os.path.abspath("./source.mkv"):
+                    print(f"[DBG] Renaming {dl_result!r} → ./source.mkv", flush=True)
+                    os.replace(dl_result, "./source.mkv")
             
             else:
                 await app.edit_message_text(chat_id, status.id, "❌ <b>ERROR: Unsupported URL format.</b>", parse_mode=enums.ParseMode.HTML)

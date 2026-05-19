@@ -1,7 +1,3 @@
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))  # repo root
-
 #!/usr/bin/env python3
 """
 anibd.py
@@ -21,6 +17,10 @@ Outputs (pipeline-standard):
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))  # repo root
 
 import concurrent.futures
 import json

@@ -118,12 +118,31 @@ async def main():
                 media = msg.video or msg.document or msg.audio
                 final_name = getattr(media, "file_name", "video.mkv")
                 
-                await app.download_media(
-                    msg, 
-                    file_name="./source.mkv",
-                    progress=progress, 
-                    progress_args=(app, chat_id, status, start_time)
-                )
+                try:
+                    dl_result = await app.download_media(
+                        msg,
+                        file_name="./source.mkv",
+                        progress=progress,
+                        progress_args=(app, chat_id, status, start_time)
+                    )
+                except Exception as dl_err:
+                    err_msg = f"download_media raised an exception: {dl_err}"
+                    print(f"❌ {err_msg}")
+                    await app.edit_message_text(
+                        chat_id, status.id,
+                        f"❌ <b>[ DOWNLOAD.FAILED ]</b>\n<code>{err_msg}</code>",
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                    sys.exit(1)
+                if dl_result is None:
+                    err_msg = "download_media returned None — message media may be expired or the bot lacks access."
+                    print(f"❌ {err_msg}")
+                    await app.edit_message_text(
+                        chat_id, status.id,
+                        f"❌ <b>[ DOWNLOAD.FAILED ]</b>\n<code>{err_msg}</code>",
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                    sys.exit(1)
 
             elif "tg_file:" in url:
                 raw_data = url.replace("tg_file:", "")
@@ -133,12 +152,31 @@ async def main():
                 else:
                     file_id = raw_data
                 
-                await app.download_media(
-                    message=file_id.strip(), 
-                    file_name="./source.mkv",
-                    progress=progress, 
-                    progress_args=(app, chat_id, status, start_time)
-                )
+                try:
+                    dl_result = await app.download_media(
+                        message=file_id.strip(),
+                        file_name="./source.mkv",
+                        progress=progress,
+                        progress_args=(app, chat_id, status, start_time)
+                    )
+                except Exception as dl_err:
+                    err_msg = f"download_media raised an exception: {dl_err}"
+                    print(f"❌ {err_msg}")
+                    await app.edit_message_text(
+                        chat_id, status.id,
+                        f"❌ <b>[ DOWNLOAD.FAILED ]</b>\n<code>{err_msg}</code>",
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                    sys.exit(1)
+                if dl_result is None:
+                    err_msg = "download_media returned None — file_id may be expired, or the bot lacks access to this file."
+                    print(f"❌ {err_msg}")
+                    await app.edit_message_text(
+                        chat_id, status.id,
+                        f"❌ <b>[ DOWNLOAD.FAILED ]</b>\n<code>{err_msg}</code>",
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                    sys.exit(1)
             
             else:
                 await app.edit_message_text(chat_id, status.id, "❌ <b>ERROR: Unsupported URL format.</b>", parse_mode=enums.ParseMode.HTML)

@@ -50,9 +50,15 @@ async def main():
         print(f"CRITICAL: Invalid Environment Variables. {e}")
         sys.exit(1)
     
-    # Use /tmp so the session dir is always writable regardless of the runner's cwd.
-    session_dir = "/tmp/tg_sessions"
+    # Keep sessions in tg_session_dir so the workflow cache picks them up.
+    # actions/cache can restore directories as read-only — chmod after makedirs
+    # ensures Pyrogram can always create/write the SQLite session file.
+    session_dir = "tg_session_dir"
     os.makedirs(session_dir, exist_ok=True)
+    try:
+        os.chmod(session_dir, 0o755)
+    except OSError:
+        pass
 
     # Derive lane from run number — 20 lanes (A–T) via run_number % 20
     # so each concurrent encode gets its own session with no cross-lane blocking.
@@ -139,6 +145,22 @@ async def main():
             
             else:
                 await app.edit_message_text(chat_id, status.id, "❌ <b>ERROR: Unsupported URL format.</b>", parse_mode=enums.ParseMode.HTML)
+                sys.exit(1)
+
+            # Validate that source.mkv was actually written and has content.
+            # download_media can return None silently on expired/inaccessible file_ids,
+            # which leaves a 0-byte file that ffprobe then rejects in the encode step.
+            source_path = "./source.mkv"
+            if not os.path.exists(source_path) or os.path.getsize(source_path) == 0:
+                size = os.path.getsize(source_path) if os.path.exists(source_path) else "missing"
+                err_msg = f"source.mkv invalid after download (size={size}). Check file_id access or bot permissions."
+                print(f"❌ {err_msg}")
+                await app.edit_message_text(
+                    chat_id, status.id,
+                    f"❌ <b>[ DOWNLOAD.FAILED ]</b>
+<code>{err_msg}</code>",
+                    parse_mode=enums.ParseMode.HTML
+                )
                 sys.exit(1)
 
             # Keep phase changes directly in Telegram so you know when it moves to encode

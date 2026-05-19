@@ -50,7 +50,8 @@ async def main():
         print(f"CRITICAL: Invalid Environment Variables. {e}")
         sys.exit(1)
     
-    session_dir = "tg_session_dir"
+    # Use /tmp so the session dir is always writable regardless of the runner's cwd.
+    session_dir = "/tmp/tg_sessions"
     os.makedirs(session_dir, exist_ok=True)
 
     # Derive lane from run number — 20 lanes (A–T) via run_number % 20

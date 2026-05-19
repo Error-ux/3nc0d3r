@@ -157,8 +157,7 @@ async def main():
                 print(f"❌ {err_msg}")
                 await app.edit_message_text(
                     chat_id, status.id,
-                    f"❌ <b>[ DOWNLOAD.FAILED ]</b>
-<code>{err_msg}</code>",
+                    f"❌ <b>[ DOWNLOAD.FAILED ]</b>\n<code>{err_msg}</code>",
                     parse_mode=enums.ParseMode.HTML
                 )
                 sys.exit(1)

@@ -114,6 +114,9 @@ async def fast_download(client, message, file_name, progress_callback, progress_
                 *progress_args
             )
 
+    # Local Progress
+    await progress_callback(0, file_size, *progress_args)
+
     tasks = [download_chunk(i * chunk_size) for i in range(part_count)]
     await asyncio.gather(*tasks)
     return file_name

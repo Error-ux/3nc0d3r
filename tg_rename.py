@@ -229,43 +229,33 @@ def capture_thumbnail(source: str) -> bool:
 # ── REMUX (apply new name + clean metadata) ───────────────────────────────────
 
 def remux(output_name: str) -> bool:
-    """
-    mkvmerge: copy all streams into a new container with the structured filename.
-    No transcoding — pure stream copy. Returns True on success.
-
-    Uses a plain temp filename (_remux_tmp.mkv) for the mkvmerge -o target to avoid
-    any shell or filesystem glob-expansion issues with brackets in the final filename,
-    then renames to the structured output name via Python.
-    """
+    """mkvmerge: copy all streams into a new container with the structured filename."""
     src = os.path.abspath(SOURCE_FILE)
     dst = os.path.abspath(output_name)
-    # Bracket-free temp name — avoids mkvmerge / shell glob-expansion on names like
-    # "[Anime] [S01-E02] Title [1080p] [Sub].mkv" which can silently corrupt on some
-    # runners.  Python's os.rename is always safe regardless of brackets.
     tmp = os.path.abspath("_remux_tmp.mkv")
 
     if not os.path.exists(src):
         raise FileNotFoundError(f"Source file missing before remux: {src}")
 
-    # Clean up any leftover tmp from a previous failed run
-    if os.path.exists(tmp):
-        os.remove(tmp)
+    if os.path.exists(tmp): os.remove(tmp)
 
-    ret = subprocess.run(
-        ["mkvmerge", "-o", tmp, src],
-        capture_output=True
-    )
-    if os.path.exists(tmp) and os.path.getsize(tmp) > 0:
-        if os.path.exists(src):
-            os.remove(src)
-        os.rename(tmp, dst)
-        return True
-    # Fallback: simple rename if mkvmerge fails (e.g. non-MKV source)
-    print(f"[remux] mkvmerge failed (rc={ret.returncode}), falling back to rename")
-    if os.path.exists(tmp):
-        os.remove(tmp)
+    try:
+        # Check if mkvmerge exists
+        if subprocess.run(["which", "mkvmerge"], stdout=subprocess.DEVNULL).returncode == 0:
+            ret = subprocess.run(["mkvmerge", "-o", tmp, src], capture_output=True)
+            if os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+                if os.path.exists(src): os.remove(src)
+                os.rename(tmp, dst)
+                return True
+            print(f"[remux] mkvmerge failed (rc={ret.returncode}), falling back to rename")
+        else:
+            print("[remux] Warning: mkvmerge not found, skipping remux.")
+    except Exception as e:
+        print(f"[remux] Error: {e}. Falling back to rename.")
+
+    if os.path.exists(tmp): os.remove(tmp)
     os.rename(src, dst)
-    return ret.returncode == 0
+    return False
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 

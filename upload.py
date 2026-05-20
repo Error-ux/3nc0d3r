@@ -79,19 +79,29 @@ async def main():
 
     try:
         # 1. REMUX — copy chapters/attachments from source, stamp encoder title
-        await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>")
-        fixed_file  = f"FIXED_{config.FILE_NAME}"
-        source      = config.SOURCE if os.path.exists(config.SOURCE) else config.FILE_NAME
-        title_args  = ["--title", config.ENCODER_TITLE] if config.ENCODER_TITLE.strip() else []
-        subprocess.run(
-            ["mkvmerge", "-o", fixed_file, *title_args,
-             config.FILE_NAME,
-             "--no-video", "--no-audio", "--no-subtitles", "--no-attachments", source],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        if os.path.exists(fixed_file):
-            os.remove(config.FILE_NAME)
-            os.rename(fixed_file, config.FILE_NAME)
+        try:
+            await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>")
+            fixed_file  = f"FIXED_{config.FILE_NAME}"
+            source      = config.SOURCE if os.path.exists(config.SOURCE) else config.FILE_NAME
+            title_args  = ["--title", config.ENCODER_TITLE] if config.ENCODER_TITLE.strip() else []
+            
+            # Check if mkvmerge exists
+            if subprocess.run(["which", "mkvmerge"], stdout=subprocess.DEVNULL).returncode == 0:
+                subprocess.run(
+                    ["mkvmerge", "-o", fixed_file, *title_args,
+                     config.FILE_NAME,
+                     "--no-video", "--no-audio", "--no-subtitles", "--no-attachments", source],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    check=True
+                )
+                if os.path.exists(fixed_file):
+                    os.remove(config.FILE_NAME)
+                    os.rename(fixed_file, config.FILE_NAME)
+                    print("[upload] Remux successful.")
+            else:
+                print("[upload] Warning: mkvmerge not found, skipping remux.")
+        except Exception as e:
+            print(f"[upload] Remux failed: {e}. Proceeding with original file.")
 
         # 2. GRID + GOFILE concurrently
         final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
@@ -179,16 +189,21 @@ async def main():
 
         await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>")
 
+        # Use fast_upload for parallel throughput
+        from utils.tg_utils import fast_upload
+        video_input = await fast_upload(
+            app, config.FILE_NAME, 
+            progress_callback=upload_progress, 
+            progress_args=(app, config.CHAT_ID, status, config.FILE_NAME)
+        )
+
         await app.send_document(
             chat_id=config.CHAT_ID,
-            document=config.FILE_NAME,
-            file_name=config.FILE_NAME,
+            document=video_input,
             thumb=thumb,
             caption=report,
             parse_mode=enums.ParseMode.HTML,
-            reply_markup=buttons,
-            progress=upload_progress,
-            progress_args=(app, config.CHAT_ID, status, config.FILE_NAME),
+            reply_markup=buttons
         )
 
         # 8. CLEANUP

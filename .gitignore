@@ -1,0 +1,22 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Sessions and local data
+*.session
+*.session-shm
+*.session-wal
+tg_session_dir/
+/tmp/tg_sessions/
+
+# Temporary run artifacts
+encode_results.json
+output_fname.txt
+tg_fname.txt
+grid_preview.jpg
+source.mkv
+output.mkv
+
+# Logs
+encode_log.txt

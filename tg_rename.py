@@ -277,7 +277,7 @@ async def main():
 
     start_total = time.time()
 
-    app = Client(session_path, api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+    app = Client(session_path, api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, max_concurrent_transmissions=16)
     for attempt in range(5):
         try:
             await app.start(); break

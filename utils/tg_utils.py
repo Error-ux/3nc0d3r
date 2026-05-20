@@ -1,27 +1,80 @@
 import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))  # repo root
-
-"""
-tg_utils.py
-Shared Telegram helpers for main.py and upload.py.
-
-Extracted to avoid copy-paste drift between the two phases.
-Exports:
-    ALL_LANES, _resolve_lane, _resolve_session_names
-    connect_telegram(tg_state, tg_ready, label)
-    tg_edit(tg_state, tg_ready, text, reply_markup=None)
-    tg_notify_failure(tg_state, tg_ready, file_name, reason)
-"""
-
-import asyncio
 import os
+import asyncio
+import math
+import time
+from pathlib import Path
 
-from pyrogram import Client, enums
+# repo root
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from pyrogram import Client, enums, raw, types, utils
 from pyrogram.errors import FloodWait
+
+# Patch for modern large Telegram IDs
+utils.MIN_CHANNEL_ID = -1009999999999999
 
 import config
 from utils.ui import get_failure_ui
+
+# ---------------------------------------------------------------------------
+# FAST MEDIA HELPERS
+# ---------------------------------------------------------------------------
+
+async def fast_upload(client: Client, file_path: str, progress_callback=None, progress_args=None):
+    """
+    Uploads a file in parallel chunks for maximum speed.
+    Returns an InputFile object ready for send_document.
+    """
+    file_size = os.path.getsize(file_path)
+    file_name = os.path.basename(file_path)
+    chunk_size = 512 * 1024
+    total_parts = math.ceil(file_size / chunk_size)
+    is_big = file_size > 10 * 1024 * 1024
+    
+    # Generate a random 8-byte file ID
+    file_id = int.from_bytes(os.urandom(8), "little", signed=True)
+    
+    semaphore = asyncio.Semaphore(16)
+    uploaded_parts = 0
+    
+    async def upload_worker(part_index, offset):
+        nonlocal uploaded_parts
+        async with semaphore:
+            with open(file_path, 'rb') as f:
+                f.seek(offset)
+                chunk = f.read(chunk_size)
+            
+            if is_big:
+                await client.invoke(
+                    raw.functions.upload.SaveBigFilePart(
+                        file_id=file_id,
+                        file_part=part_index,
+                        file_total_parts=total_parts,
+                        bytes=chunk
+                    )
+                )
+            else:
+                await client.invoke(
+                    raw.functions.upload.SaveFilePart(
+                        file_id=file_id,
+                        file_part=part_index,
+                        bytes=chunk
+                    )
+                )
+            
+            uploaded_parts += 1
+            if progress_callback:
+                # throttled UI update handled by the callback itself usually
+                await progress_callback(min(uploaded_parts * chunk_size, file_size), file_size, *progress_args)
+
+    tasks = [upload_worker(i, i * chunk_size) for i in range(total_parts)]
+    await asyncio.gather(*tasks)
+
+    if is_big:
+        return raw.types.InputFileBig(id=file_id, parts=total_parts, name=file_name)
+    else:
+        return raw.types.InputFile(id=file_id, parts=total_parts, name=file_name, md5_checksum="")
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +90,6 @@ def _resolve_lane(run_number: int) -> str:
 def _resolve_session_names() -> list[str]:
     """
     Return an ordered list of session names to try, most-preferred first.
-    Own lane tried first, then cross-lane fallbacks, then legacy bare session.
     """
     run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
     lane = _resolve_lane(run_number)
@@ -60,8 +112,6 @@ def _resolve_session_names() -> list[str]:
 async def connect_telegram(tg_state: dict, tg_ready: asyncio.Event, label: str):
     """
     Connect to Telegram trying each session in priority order.
-    FloodWait on a session → skip to next. If all flooded → sleep shortest
-    wait then retry. Sets tg_state['app'] and tg_state['status'] on success.
     """
     session_names = _resolve_session_names()
     flood_waits: dict[str, int] = {}
@@ -74,6 +124,7 @@ async def connect_telegram(tg_state: dict, tg_ready: asyncio.Event, label: str):
                 api_id=config.API_ID,
                 api_hash=config.API_HASH,
                 bot_token=config.BOT_TOKEN,
+                max_concurrent_transmissions=16
             )
             await candidate.start()
             app = candidate
@@ -101,6 +152,7 @@ async def connect_telegram(tg_state: dict, tg_ready: asyncio.Event, label: str):
                     api_id=config.API_ID,
                     api_hash=config.API_HASH,
                     bot_token=config.BOT_TOKEN,
+                    max_concurrent_transmissions=16
                 )
                 await candidate.start()
                 app = candidate
@@ -164,10 +216,6 @@ async def tg_edit(tg_state: dict, tg_ready: asyncio.Event, text: str, reply_mark
 # ---------------------------------------------------------------------------
 async def tg_notify_failure(tg_state: dict, tg_ready: asyncio.Event,
                             file_name: str, reason: str):
-    """
-    Edit status message to failure UI and attach log file if present.
-    Safe to call even if TG never connected.
-    """
     app    = tg_state.get("app")
     status = tg_state.get("status")
     if not app or not status:
@@ -181,7 +229,7 @@ async def tg_notify_failure(tg_state: dict, tg_ready: asyncio.Event,
         )
     except Exception as e:
         print(f"[TG-FAIL] Could not edit status message: {e}")
-    if config.LOG_FILE and __import__("os").path.exists(config.LOG_FILE):
+    if config.LOG_FILE and os.path.exists(config.LOG_FILE):
         try:
             await app.send_document(
                 config.CHAT_ID, config.LOG_FILE,

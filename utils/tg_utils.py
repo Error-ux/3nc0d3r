@@ -95,13 +95,14 @@ def _resolve_session_names() -> list[str]:
     lane = _resolve_lane(run_number)
     print(f"TG session lane: {lane} (run #{run_number})")
 
+    session_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tg_session_dir"))
     other_lanes = [l for l in ALL_LANES if l != lane]
     sessions = []
-    sessions.append(f"tg_session_dir/enc_session_{lane}")
-    sessions.append(f"tg_session_dir/tg_dl_session_{lane}")
+    sessions.append(os.path.join(session_dir, f"enc_session_{lane}"))
+    sessions.append(os.path.join(session_dir, f"tg_dl_session_{lane}"))
     for other in other_lanes:
-        sessions.append(f"tg_session_dir/enc_session_{other}")
-        sessions.append(f"tg_session_dir/tg_dl_session_{other}")
+        sessions.append(os.path.join(session_dir, f"enc_session_{other}"))
+        sessions.append(os.path.join(session_dir, f"tg_dl_session_{other}"))
     sessions.append(config.SESSION_NAME)
     return sessions
 

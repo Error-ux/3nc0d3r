@@ -261,7 +261,7 @@ def remux(output_name: str) -> bool:
 
 async def main():
     lane         = resolve_lane()
-    session_dir  = "tg_session_dir"
+    session_dir  = os.path.abspath(os.path.join(os.path.dirname(__file__), "tg_session_dir"))
     os.makedirs(session_dir, exist_ok=True)
     session_path = os.path.join(session_dir, f"tg_dl_session_{lane}")
 

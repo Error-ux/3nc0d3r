@@ -132,7 +132,7 @@ async def main():
         print(f"CRITICAL: Invalid Environment Variables. {e}")
         sys.exit(1)
     
-    session_dir = "/tmp/tg_sessions"
+    session_dir = "tg_session_dir"
     os.makedirs(session_dir, exist_ok=True)
 
     _ALL_LANES = [chr(ord("A") + i) for i in range(20)]

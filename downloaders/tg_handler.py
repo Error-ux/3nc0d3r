@@ -26,7 +26,7 @@ from pyrogram.errors import FloodWait
 # Patch for modern large Telegram IDs
 utils.MIN_CHANNEL_ID = -1009999999999999
 
-from utils.ui import get_download_ui
+from utils.ui import get_download_ui, format_time
 
 async def progress(current, total, app, chat_id, message, start_time):
     if not hasattr(progress, "last_update"):
@@ -42,7 +42,48 @@ async def progress(current, total, app, chat_id, message, start_time):
     print(f"📥 [PROGRESS] Downloaded {current}/{total} bytes ({pct:.1f}%)", flush=True)
 
     if total <= 0:
-        print(f"⚠️ [PROGRESS] Skip updating Telegram UI: total={total} <= 0", flush=True)
+        # Download with unknown size — show beautiful active scrolling progress bar
+        downloaded_mb = current / (1024 * 1024)
+        elapsed = now - start_time
+        speed_bytes = current / elapsed if elapsed > 0 else 0
+        speed_mb = speed_bytes / (1024 * 1024)
+        
+        # Dynamic active scrolling loader bar
+        animation_chars = [
+            "[▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱]",
+            "[▱▰▱▱▱▱▱▱▱▱▱▱▱▱▱]",
+            "[▱▱▰▱▱▱▱▱▱▱▱▱▱▱▱]",
+            "[▱▱▱▰▱▱▱▱▱▱▱▱▱▱▱]",
+            "[▱▱▱▱▰▱▱▱▱▱▱▱▱▱▱]",
+            "[▱▱▱▱▱▰▱▱▱▱▱▱▱▱▱]",
+            "[▱▱▱▱▱▱▰▱▱▱▱▱▱▱▱]",
+            "[▱▱▱▱▱▱▱▰▱▱▱▱▱▱▱]",
+            "[▱▱▱▱▱▱▱▱▰▱▱▱▱▱▱]",
+            "[▱▱▱▱▱▱▱▱▱▰▱▱▱▱▱]",
+            "[▱▱▱▱▱▱▱▱▱▱▰▱▱▱▱]",
+            "[▱▱▱▱▱▱▱▱▱▱▱▰▱▱▱]",
+            "[▱▱▱▱▱▱▱▱▱▱▱▱▰▱▱]",
+            "[▱▱▱▱▱▱▱▱▱▱▱▱▱▰▱]",
+            "[▱▱▱▱▱▱▱▱▱▱▱▱▱▱▰]",
+        ]
+        frame = int(elapsed * 2) % len(animation_chars)
+        bar = animation_chars[frame]
+        
+        ui_text = (
+            f"<code>┌─── 🛰️ [ SYSTEM.DOWNLOAD.ACTIVE ] ───┐\n"
+            f"│                                    \n"
+            f"│ 📥 STATUS: Fetching from Telegram  \n"
+            f"│ 📊 PROG: {bar} (Size Unknown)\n"
+            f"│ ⚡ SPEED: {speed_mb:.2f} MB/s\n"
+            f"│ 📦 SIZE: {downloaded_mb:.2f} MB\n"
+            f"│ ⏳ TIME: {format_time(elapsed)}\n"
+            f"│                                    \n"
+            f"└────────────────────────────────────┘</code>"
+        )
+        try:
+            await app.edit_message_text(chat_id, message.id, ui_text, parse_mode=enums.ParseMode.HTML)
+        except Exception as e:
+            print(f"❌ [PROGRESS] Telegram UI update failed: {e}", flush=True)
         return
 
     percent = pct

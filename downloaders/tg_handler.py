@@ -13,9 +13,9 @@ def no_interactive_input(prompt=""):
     raise RuntimeError(f"Interactive terminal input requested: '{prompt}'. Failing fast.")
 builtins.input = no_interactive_input
 
-# Enable debug logging for Pyrogram
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logging.getLogger("pyrogram").setLevel(logging.DEBUG)
+# Disable debug logging for Pyrogram to prevent dumping MTProto packet hex/binary data
+logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
 
 # Add repo root to sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent))

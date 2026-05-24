@@ -32,16 +32,20 @@ async def progress(current, total, app, chat_id, message, start_time):
     if not hasattr(progress, "last_update"):
         progress.last_update = 0
 
+    pct = (current / total * 100) if total > 0 else 0
+    print(f"📥 [PROGRESS] Downloaded {current}/{total} bytes ({pct:.1f}%)", flush=True)
+
     if total <= 0:
+        print(f"⚠️ [PROGRESS] Skip updating Telegram UI: total={total} <= 0", flush=True)
         return
 
     now = time.time()
-    # Throttled to 5 seconds for more responsiveness
-    if now - progress.last_update < 5 and current < total:
+    # Throttled to 3 seconds for better responsiveness
+    if now - progress.last_update < 3 and current < total:
         return
 
     progress.last_update = now
-    percent = (current / total) * 100
+    percent = pct
     elapsed = now - start_time
     speed_bytes = current / elapsed if elapsed > 0 else 0
     speed_mb    = speed_bytes / (1024 * 1024)
@@ -51,8 +55,8 @@ async def progress(current, total, app, chat_id, message, start_time):
     ui_text = get_download_ui(percent, speed_mb, size_mb, elapsed, eta)
     try:
         await app.edit_message_text(chat_id, message.id, ui_text, parse_mode=enums.ParseMode.HTML)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"❌ [PROGRESS] Telegram UI update failed: {e}", flush=True)
 
 async def fast_download(client, message, file_name, progress_callback, progress_args):
     """

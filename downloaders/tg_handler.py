@@ -152,46 +152,19 @@ async def main():
         print(f"CRITICAL: Invalid Environment Variables. {e}", flush=True)
         sys.exit(1)
     
-    from utils.tg_utils import _resolve_session_names
-    session_names = _resolve_session_names()
-    print(f"DEBUG: Prioritized session names to try: {session_names}", flush=True)
+    try:
+        from utils.tg_utils import _resolve_session_names
+        session_names = _resolve_session_names()
+        print(f"DEBUG: Prioritized session names to try: {session_names}", flush=True)
 
-    app = None
-    flood_waits = {}
+        app = None
+        flood_waits = {}
 
-    for session_name in session_names:
-        print(f"DEBUG: Trying session: {session_name}...", flush=True)
-        try:
-            candidate = Client(
-                session_name,
-                api_id=api_id,
-                api_hash=api_hash,
-                bot_token=bot_token or None,
-                max_concurrent_transmissions=16
-            )
-            await candidate.start()
-            app = candidate
-            print(f"DEBUG: TG auth OK with session: {session_name}", flush=True)
-            break
-        except FloodWait as e:
-            flood_waits[session_name] = e.value
-            print(f"DEBUG: FloodWait {e.value}s on '{session_name}' — trying next...", flush=True)
-            continue
-        except Exception as e:
-            print(f"DEBUG: TG auth error on '{session_name}': {e} — trying next...", flush=True)
-            continue
-
-    if app is None and flood_waits:
-        best_session = min(flood_waits, key=flood_waits.get)
-        wait_secs = flood_waits[best_session]
-        attempt = 0
-        while True:
-            attempt += 1
-            print(f"All sessions flooded. Sleeping {wait_secs}s for '{best_session}' (attempt {attempt})...", flush=True)
-            await asyncio.sleep(wait_secs + 5)
+        for session_name in session_names:
+            print(f"DEBUG: Trying session: {session_name}...", flush=True)
             try:
                 candidate = Client(
-                    best_session,
+                    session_name,
                     api_id=api_id,
                     api_hash=api_hash,
                     bot_token=bot_token or None,
@@ -199,19 +172,47 @@ async def main():
                 )
                 await candidate.start()
                 app = candidate
-                print(f"DEBUG: TG auth OK (post-flood attempt {attempt}): {best_session}", flush=True)
+                print(f"DEBUG: TG auth OK with session: {session_name}", flush=True)
                 break
             except FloodWait as e:
-                wait_secs = e.value
-                print(f"DEBUG: Another FloodWait: {wait_secs}s — retrying...", flush=True)
+                flood_waits[session_name] = e.value
+                print(f"DEBUG: FloodWait {e.value}s on '{session_name}' — trying next...", flush=True)
                 continue
             except Exception as e:
-                print(f"DEBUG: TG auth failed on post-flood attempt {attempt}: {e}", flush=True)
-                break
+                print(f"DEBUG: TG auth error on '{session_name}': {e} — trying next...", flush=True)
+                continue
 
-    if app is None:
-        print("❌ Could not authorize with Telegram. No usable session found.", flush=True)
-        sys.exit(1)
+        if app is None and flood_waits:
+            best_session = min(flood_waits, key=flood_waits.get)
+            wait_secs = flood_waits[best_session]
+            attempt = 0
+            while True:
+                attempt += 1
+                print(f"All sessions flooded. Sleeping {wait_secs}s for '{best_session}' (attempt {attempt})...", flush=True)
+                await asyncio.sleep(wait_secs + 5)
+                try:
+                    candidate = Client(
+                        best_session,
+                        api_id=api_id,
+                        api_hash=api_hash,
+                        bot_token=bot_token or None,
+                        max_concurrent_transmissions=16
+                    )
+                    await candidate.start()
+                    app = candidate
+                    print(f"DEBUG: TG auth OK (post-flood attempt {attempt}): {best_session}", flush=True)
+                    break
+                except FloodWait as e:
+                    wait_secs = e.value
+                    print(f"DEBUG: Another FloodWait: {wait_secs}s — retrying...", flush=True)
+                    continue
+                except Exception as e:
+                    print(f"DEBUG: TG auth failed on post-flood attempt {attempt}: {e}", flush=True)
+                    break
+
+        if app is None:
+            print("❌ Could not authorize with Telegram. No usable session found.", flush=True)
+            sys.exit(1)
 
         try:
             status = await app.send_message(

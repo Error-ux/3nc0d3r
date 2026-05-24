@@ -17,6 +17,16 @@ utils.MIN_CHANNEL_ID = -1009999999999999
 import config
 from utils.ui import get_failure_ui
 
+# Monkeypatch Pyrogram Client.save_file to support pre-uploaded InputFile/InputFileBig objects
+original_save_file = Client.save_file
+
+async def patched_save_file(self, path, progress=None, progress_args=()):
+    if isinstance(path, (raw.types.InputFile, raw.types.InputFileBig)):
+        return path
+    return await original_save_file(self, path, progress=progress, progress_args=progress_args)
+
+Client.save_file = patched_save_file
+
 # ---------------------------------------------------------------------------
 # FAST MEDIA HELPERS
 # ---------------------------------------------------------------------------

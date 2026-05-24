@@ -117,10 +117,17 @@ async def download_from_tg(app, status_msg) -> str:
     if VIDEO_URL.startswith("tg_file:"):
         raw = VIDEO_URL.replace("tg_file:", "")
         file_id, orig_name = (raw.split("|", 1) if "|" in raw else (raw, "source.mkv"))
-        await app.download_media(
+        dl_result = await app.download_media(
             message=file_id.strip(), file_name=SOURCE_FILE,
             progress=dl_progress, progress_args=(app, CHAT_ID, status_msg, start)
         )
+        if dl_result and dl_result != SOURCE_FILE and os.path.exists(dl_result):
+            try:
+                if os.path.exists(SOURCE_FILE):
+                    os.remove(SOURCE_FILE)
+                os.rename(dl_result, SOURCE_FILE)
+            except Exception as e:
+                print(f"WARNING: Failed to rename {dl_result} to {SOURCE_FILE}: {e}")
         return orig_name
 
     if "t.me/" in VIDEO_URL:
@@ -130,10 +137,17 @@ async def download_from_tg(app, status_msg) -> str:
         msg  = await app.get_messages(target_chat, msg_id)
         media = getattr(msg, "video", None) or getattr(msg, "document", None)
         orig_name = getattr(media, "file_name", "source.mkv") if media else "source.mkv"
-        await app.download_media(
+        dl_result = await app.download_media(
             msg, file_name=SOURCE_FILE,
             progress=dl_progress, progress_args=(app, CHAT_ID, status_msg, start)
         )
+        if dl_result and dl_result != SOURCE_FILE and os.path.exists(dl_result):
+            try:
+                if os.path.exists(SOURCE_FILE):
+                    os.remove(SOURCE_FILE)
+                os.rename(dl_result, SOURCE_FILE)
+            except Exception as e:
+                print(f"WARNING: Failed to rename {dl_result} to {SOURCE_FILE}: {e}")
         return orig_name
 
     raise ValueError(f"Unsupported URL format: {VIDEO_URL}")

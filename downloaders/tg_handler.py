@@ -301,10 +301,20 @@ async def main():
                         parse_mode=enums.ParseMode.HTML
                     )
                     sys.exit(1)
-            
             else:
                 await app.edit_message_text(chat_id, status.id, "❌ <b>ERROR: Unsupported URL format.</b>", parse_mode=enums.ParseMode.HTML)
                 sys.exit(1)
+
+            # Pyrogram's download_media often modifies the file extension automatically
+            # based on MIME type. Rename the returned path to our expected "./source.mkv".
+            if dl_result and dl_result != "./source.mkv" and os.path.exists(dl_result):
+                try:
+                    if os.path.exists("./source.mkv"):
+                        os.remove("./source.mkv")
+                    os.rename(dl_result, "./source.mkv")
+                    print(f"DEBUG: Successfully renamed {dl_result} to ./source.mkv", flush=True)
+                except Exception as rename_err:
+                    print(f"WARNING: Failed to rename {dl_result} to ./source.mkv: {rename_err}", flush=True)
 
             source_path = "./source.mkv"
             if not os.path.exists(source_path) or os.path.getsize(source_path) == 0:

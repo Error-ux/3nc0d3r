@@ -32,6 +32,12 @@ async def progress(current, total, app, chat_id, message, start_time):
     if not hasattr(progress, "last_update"):
         progress.last_update = 0
 
+    now = time.time()
+    # Throttle log + UI updates to 3 seconds unless it's the very first or final callback
+    if now - progress.last_update < 3 and current != total:
+        return
+
+    progress.last_update = now
     pct = (current / total * 100) if total > 0 else 0
     print(f"📥 [PROGRESS] Downloaded {current}/{total} bytes ({pct:.1f}%)", flush=True)
 
@@ -39,12 +45,6 @@ async def progress(current, total, app, chat_id, message, start_time):
         print(f"⚠️ [PROGRESS] Skip updating Telegram UI: total={total} <= 0", flush=True)
         return
 
-    now = time.time()
-    # Throttled to 3 seconds for better responsiveness
-    if now - progress.last_update < 3 and current < total:
-        return
-
-    progress.last_update = now
     percent = pct
     elapsed = now - start_time
     speed_bytes = current / elapsed if elapsed > 0 else 0

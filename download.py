@@ -162,7 +162,7 @@ def notify_download_start(method, output_name):
 def download_telegram():
     """Delegate to tg_handler.py for all Telegram URLs."""
     print("📡 Telegram URL detected → tg_handler.py", flush=True)
-    run(["python3", "downloaders/tg_handler.py"], label="TG")
+    run(["python3", "-u", "downloaders/tg_handler.py"], label="TG")
 
 
 def download_hls_or_platform():

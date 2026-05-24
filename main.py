@@ -583,16 +583,21 @@ async def main():
 
         await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>")
 
+        # Use fast_upload for parallel throughput
+        from utils.tg_utils import fast_upload
+        video_input = await fast_upload(
+            app, config.FILE_NAME, 
+            progress_callback=upload_progress, 
+            progress_args=(app, config.CHAT_ID, status, config.FILE_NAME)
+        )
+
         await app.send_document(
             chat_id=config.CHAT_ID,
-            document=config.FILE_NAME,
-            file_name=config.FILE_NAME,
+            document=video_input,
             thumb=thumb,
             caption=report,
             parse_mode=enums.ParseMode.HTML,
-            reply_markup=buttons,
-            progress=upload_progress,
-            progress_args=(app, config.CHAT_ID, status, config.FILE_NAME),
+            reply_markup=buttons
         )
 
         # CLEANUP

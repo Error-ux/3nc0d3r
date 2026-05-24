@@ -4,7 +4,18 @@ import sys
 import time
 import traceback
 import math
+import logging
+import builtins
 from pathlib import Path
+
+# Prevent any interactive input prompts in non-interactive environments
+def no_interactive_input(prompt=""):
+    raise RuntimeError(f"Interactive terminal input requested: '{prompt}'. Failing fast.")
+builtins.input = no_interactive_input
+
+# Enable debug logging for Pyrogram
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logging.getLogger("pyrogram").setLevel(logging.DEBUG)
 
 # Add repo root to sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -123,44 +134,84 @@ async def fast_download(client, message, file_name, progress_callback, progress_
 
 async def main():
     try:
-        api_id = int(os.environ.get("TG_API_ID", "0").strip())
+        api_id_str = os.environ.get("TG_API_ID", "").strip()
         api_hash = os.environ.get("TG_API_HASH", "").strip()
         bot_token = os.environ.get("TG_BOT_TOKEN", "").strip()
-        chat_id = int(os.environ.get("TG_CHAT_ID", "0").strip())
+        chat_id_str = os.environ.get("TG_CHAT_ID", "").strip()
         url = os.environ.get("VIDEO_URL", "").strip()
+
+        print(f"DEBUG ENV: TG_API_ID present={bool(api_id_str)} (len={len(api_id_str)})", flush=True)
+        print(f"DEBUG ENV: TG_API_HASH present={bool(api_hash)} (len={len(api_hash)})", flush=True)
+        print(f"DEBUG ENV: TG_BOT_TOKEN present={bool(bot_token)} (len={len(bot_token)})", flush=True)
+        print(f"DEBUG ENV: TG_CHAT_ID present={bool(chat_id_str)} (len={len(chat_id_str)})", flush=True)
+        print(f"DEBUG ENV: VIDEO_URL present={bool(url)} (len={len(url)})", flush=True)
+
+        api_id = int(api_id_str) if api_id_str else 0
+        chat_id = int(chat_id_str) if chat_id_str else 0
     except ValueError as e:
-        print(f"CRITICAL: Invalid Environment Variables. {e}")
+        print(f"CRITICAL: Invalid Environment Variables. {e}", flush=True)
         sys.exit(1)
     
-    session_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tg_session_dir"))
-    os.makedirs(session_dir, exist_ok=True)
+    from utils.tg_utils import _resolve_session_names
+    session_names = _resolve_session_names()
+    print(f"DEBUG: Prioritized session names to try: {session_names}", flush=True)
 
-    _ALL_LANES = [chr(ord("A") + i) for i in range(20)]
-    run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
-    lane = _ALL_LANES[run_number % 20]
-    print(f"Session lane: {lane} (run #{run_number})")
-    session_path = os.path.join(session_dir, f"tg_dl_session_{lane}")
+    app = None
+    flood_waits = {}
 
-    try:
-        app = Client(
-            session_path, 
-            api_id=api_id, 
-            api_hash=api_hash, 
-            bot_token=bot_token,
-            max_concurrent_transmissions=16
-        )
-        
-        for _attempt in range(5):
+    for session_name in session_names:
+        print(f"DEBUG: Trying session: {session_name}...", flush=True)
+        try:
+            candidate = Client(
+                session_name,
+                api_id=api_id,
+                api_hash=api_hash,
+                bot_token=bot_token or None,
+                max_concurrent_transmissions=16
+            )
+            await candidate.start()
+            app = candidate
+            print(f"DEBUG: TG auth OK with session: {session_name}", flush=True)
+            break
+        except FloodWait as e:
+            flood_waits[session_name] = e.value
+            print(f"DEBUG: FloodWait {e.value}s on '{session_name}' — trying next...", flush=True)
+            continue
+        except Exception as e:
+            print(f"DEBUG: TG auth error on '{session_name}': {e} — trying next...", flush=True)
+            continue
+
+    if app is None and flood_waits:
+        best_session = min(flood_waits, key=flood_waits.get)
+        wait_secs = flood_waits[best_session]
+        attempt = 0
+        while True:
+            attempt += 1
+            print(f"All sessions flooded. Sleeping {wait_secs}s for '{best_session}' (attempt {attempt})...", flush=True)
+            await asyncio.sleep(wait_secs + 5)
             try:
-                await app.start()
+                candidate = Client(
+                    best_session,
+                    api_id=api_id,
+                    api_hash=api_hash,
+                    bot_token=bot_token or None,
+                    max_concurrent_transmissions=16
+                )
+                await candidate.start()
+                app = candidate
+                print(f"DEBUG: TG auth OK (post-flood attempt {attempt}): {best_session}", flush=True)
                 break
             except FloodWait as e:
-                wait_secs = e.value + 5
-                print(f"⏳ FloodWait on auth: waiting {wait_secs}s (attempt {_attempt + 1}/5)")
-                await asyncio.sleep(wait_secs)
-        else:
-            print("❌ Could not authorize with Telegram after 5 attempts.")
-            sys.exit(1)
+                wait_secs = e.value
+                print(f"DEBUG: Another FloodWait: {wait_secs}s — retrying...", flush=True)
+                continue
+            except Exception as e:
+                print(f"DEBUG: TG auth failed on post-flood attempt {attempt}: {e}", flush=True)
+                break
+
+    if app is None:
+        print("❌ Could not authorize with Telegram. No usable session found.", flush=True)
+        sys.exit(1)
 
         try:
             status = await app.send_message(

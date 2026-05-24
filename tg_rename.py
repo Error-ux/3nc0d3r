@@ -260,21 +260,66 @@ def remux(output_name: str) -> bool:
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    lane         = resolve_lane()
-    session_dir  = os.path.abspath(os.path.join(os.path.dirname(__file__), "tg_session_dir"))
-    os.makedirs(session_dir, exist_ok=True)
-    session_path = os.path.join(session_dir, f"tg_dl_session_{lane}")
+    from utils.tg_utils import _resolve_session_names
+    session_names = _resolve_session_names()
+    print(f"DEBUG: Prioritized session names to try: {session_names}")
 
-    start_total = time.time()
+    app = None
+    flood_waits = {}
 
-    app = Client(session_path, api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, max_concurrent_transmissions=16)
-    for attempt in range(5):
+    for session_name in session_names:
+        print(f"DEBUG: Trying session: {session_name}...")
         try:
-            await app.start(); break
+            candidate = Client(
+                session_name,
+                api_id=API_ID,
+                api_hash=API_HASH,
+                bot_token=BOT_TOKEN or None,
+                max_concurrent_transmissions=16
+            )
+            await candidate.start()
+            app = candidate
+            print(f"DEBUG: TG auth OK with session: {session_name}")
+            break
         except FloodWait as e:
-            await asyncio.sleep(e.value + 5)
-    else:
-        print("❌ Could not authenticate with Telegram after 5 attempts."); sys.exit(1)
+            flood_waits[session_name] = e.value
+            print(f"DEBUG: FloodWait {e.value}s on '{session_name}' — trying next...")
+            continue
+        except Exception as e:
+            print(f"DEBUG: TG auth error on '{session_name}': {e} — trying next...")
+            continue
+
+    if app is None and flood_waits:
+        best_session = min(flood_waits, key=flood_waits.get)
+        wait_secs = flood_waits[best_session]
+        attempt = 0
+        while True:
+            attempt += 1
+            print(f"All sessions flooded. Sleeping {wait_secs}s for '{best_session}' (attempt {attempt})...")
+            await asyncio.sleep(wait_secs + 5)
+            try:
+                candidate = Client(
+                    best_session,
+                    api_id=API_ID,
+                    api_hash=API_HASH,
+                    bot_token=BOT_TOKEN or None,
+                    max_concurrent_transmissions=16
+                )
+                await candidate.start()
+                app = candidate
+                print(f"DEBUG: TG auth OK (post-flood attempt {attempt}): {best_session}")
+                break
+            except FloodWait as e:
+                wait_secs = e.value
+                print(f"DEBUG: Another FloodWait: {wait_secs}s — retrying...")
+                continue
+            except Exception as e:
+                print(f"DEBUG: TG auth failed on post-flood attempt {attempt}: {e}")
+                break
+
+    if app is None:
+        print("❌ Could not authorize with Telegram. No usable session found.")
+        sys.exit(1)
 
     try:
         status = await app.send_message(
@@ -372,15 +417,20 @@ async def main():
 
         _ui.last_up_pct = -1; _ui.last_up_update = 0; _ui.up_start_time = 0
 
+        # Use fast_upload for parallel throughput
+        from utils.tg_utils import fast_upload
+        video_input = await fast_upload(
+            app, output_name, 
+            progress_callback=upload_progress, 
+            progress_args=(app, CHAT_ID, status, output_name)
+        )
+
         await app.send_document(
             chat_id=CHAT_ID,
-            document=output_name,
-            file_name=output_name,
+            document=video_input,
             thumb=THUMBNAIL if has_thumb else None,
             caption=report,
             parse_mode=enums.ParseMode.HTML,
-            progress=upload_progress,
-            progress_args=(app, CHAT_ID, status, output_name),
         )
 
         try: await status.delete()

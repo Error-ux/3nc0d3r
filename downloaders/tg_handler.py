@@ -177,6 +177,116 @@ async def fast_download(client, message, file_name, progress_callback, progress_
     await asyncio.gather(*tasks)
     return file_name
 
+async def fast_download_file_id(client, file_id, file_name, progress_callback, progress_args):
+    """
+    Downloads a file by raw file_id string in parallel chunks (up to 16 concurrent connections)
+    without needing a Message object. Dynamically discovers total_size during download.
+    """
+    from pyrogram.file_id import FileId, FileType
+    decoded = FileId.decode(file_id)
+    
+    if decoded.file_type in [FileType.PHOTO, FileType.THUMBNAIL]:
+        location = raw.types.InputPhotoFileLocation(
+            id=decoded.media_id,
+            access_hash=decoded.access_hash,
+            file_reference=decoded.file_reference,
+            thumb_size=decoded.thumbnail_size
+        )
+    else:
+        location = raw.types.InputDocumentFileLocation(
+            id=decoded.media_id,
+            access_hash=decoded.access_hash,
+            file_reference=decoded.file_reference,
+            thumb_size=decoded.thumbnail_size or ""
+        )
+
+    chunk_size = 1024 * 1024  # 1MB chunks
+    downloaded_chunks = 0
+    total_size = None
+    finished_event = asyncio.Event()
+    
+    # Open file for writing offsets concurrently
+    fd = os.open(file_name, os.O_CREAT | os.O_RDWR)
+    
+    semaphore = asyncio.Semaphore(16)
+    next_offset = 0
+    downloaded_bytes = 0
+    active_tasks = set()
+    start_time = progress_args[-1]
+    
+    async def download_chunk(offset):
+        nonlocal total_size, downloaded_bytes, downloaded_chunks
+        async with semaphore:
+            if finished_event.is_set() and (total_size is not None and offset >= total_size):
+                return
+            
+            for attempt in range(3):
+                try:
+                    r = await client.invoke(
+                        raw.functions.upload.GetFile(
+                            location=location,
+                            offset=offset,
+                            limit=chunk_size
+                        )
+                    )
+                    if isinstance(r, raw.types.upload.File):
+                        chunk_bytes = r.bytes
+                        chunk_len = len(chunk_bytes)
+                        
+                        if chunk_len > 0:
+                            os.pwrite(fd, chunk_bytes, offset)
+                            downloaded_bytes += chunk_len
+                            
+                        # If returned chunk is smaller than limit, we reached the end!
+                        if chunk_len < chunk_size:
+                            total_size = offset + chunk_len
+                            finished_event.set()
+                            
+                    break
+                except FloodWait as e:
+                    await asyncio.sleep(e.value + 2)
+                except Exception as e:
+                    print(f"Error downloading chunk at {offset}: {e}")
+                    await asyncio.sleep(2)
+            
+            downloaded_chunks += 1
+            await progress_callback(
+                downloaded_bytes, 
+                total_size or 0, 
+                *progress_args
+            )
+
+    # Coordinated loop to run up to 16 tasks concurrently
+    while not finished_event.is_set():
+        while len(active_tasks) < 16 and not finished_event.is_set():
+            task = asyncio.create_task(download_chunk(next_offset))
+            active_tasks.add(task)
+            next_offset += chunk_size
+            
+        if active_tasks:
+            done, pending = await asyncio.wait(active_tasks, return_when=asyncio.FIRST_COMPLETED)
+            active_tasks = pending
+        else:
+            break
+
+    # Wait for remaining active tasks below total_size to finish
+    if active_tasks:
+        valid_tasks = []
+        for t in active_tasks:
+            # Task offsets beyond total_size can be ignored
+            valid_tasks.append(t)
+        if valid_tasks:
+            await asyncio.gather(*valid_tasks, return_exceptions=True)
+        
+    os.close(fd)
+    
+    # Truncate to exact final size
+    if total_size is not None:
+        with open(file_name, "ab") as f:
+            f.truncate(total_size)
+            
+    return file_name
+
 async def main():
     try:
         api_id_str = os.environ.get("TG_API_ID", "").strip()
@@ -327,10 +437,11 @@ async def main():
                     file_id = raw_data
                 
                 try:
-                    dl_result = await app.download_media(
-                        message=file_id.strip(),
+                    dl_result = await fast_download_file_id(
+                        app,
+                        file_id=file_id.strip(),
                         file_name="./source.mkv",
-                        progress=progress,
+                        progress_callback=progress,
                         progress_args=(app, chat_id, status, start_time)
                     )
                 except Exception as dl_err:

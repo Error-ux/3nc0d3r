@@ -211,6 +211,7 @@ jobs:
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_CHAT_ID_OTHER: ${{ secrets.TG_CHAT_ID_OTHER }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
           CUSTOM: ${{ github.event.inputs.custom_name }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
@@ -226,6 +227,7 @@ jobs:
           API_HASH: ${{ secrets.TG_API_HASH }}
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          CHAT_ID_OTHER: ${{ secrets.TG_CHAT_ID_OTHER }}
           SESSION_NAME: "enc_session"
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           USER_RES: ${{ github.event.inputs.res_choice }}
@@ -264,6 +266,8 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          CHAT_ID_OTHER: ${{ secrets.TG_CHAT_ID_OTHER }}
+          CONTENT_TYPE: ${{ github.event.inputs.content_type }}
           DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
           ENCODE_OUTCOME: ${{ steps.encode.outcome }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}

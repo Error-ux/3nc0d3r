@@ -9,7 +9,25 @@ LOG_FILE = "encode_log.txt"
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-CHAT_ID = int(os.getenv("CHAT_ID", "0")) if os.getenv("CHAT_ID") else 0
+
+# Dynamic 2-Channel Routing (Anime vs Other content types)
+_PRIMARY_CHAT = os.getenv("CHAT_ID", os.getenv("TG_CHAT_ID", "0")).strip()
+_OTHER_CHAT   = os.getenv("CHAT_ID_OTHER", os.getenv("TG_CHAT_ID_OTHER", "0")).strip()
+
+# Check Content Type (Anime vs AMV/Donghua/Hentai/HMV/custom)
+CONTENT_TYPE_VAL = os.getenv("CONTENT_TYPE", "Anime").strip()
+
+if CONTENT_TYPE_VAL.lower() != "anime" and _OTHER_CHAT != "0" and _OTHER_CHAT != "":
+    _target_chat_str = _OTHER_CHAT
+else:
+    _target_chat_str = _PRIMARY_CHAT
+
+CHAT_ID = int(_target_chat_str) if _target_chat_str else 0
+
+# Set environment variables for all concurrent modules and subprocesses
+os.environ["CHAT_ID"] = str(CHAT_ID)
+os.environ["TG_CHAT_ID"] = str(CHAT_ID)
+
 FILE_NAME = os.getenv("FILE_NAME", "output.mkv")
 SESSION_NAME = os.getenv("SESSION_NAME", "enc_session")
 

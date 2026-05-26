@@ -4,6 +4,8 @@ import subprocess
 import time
 import shutil
 import psutil
+import urllib.request
+import json
 from pyrogram import enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -13,6 +15,34 @@ from utils.rename import lang_code_to_name
 from utils.ui import get_encode_ui, format_time, upload_progress, get_vmaf_ui
 from utils.rename import resolve_output_name, format_track_report
 from utils.tg_utils import connect_telegram, tg_edit, tg_notify_failure
+
+
+def _sync_write_redis(key: str, state_dict: dict):
+    redis_url = os.getenv("REDIS_URL")
+    redis_token = os.getenv("REDIS_TOKEN")
+    if not redis_url or not redis_token:
+        return
+    try:
+        url = redis_url.rstrip("/")
+        headers = {
+            "Authorization": f"Bearer {redis_token}",
+            "Content-Type": "application/json"
+        }
+        payload = ["SET", key, json.dumps(state_dict)]
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=5) as response:
+            response.read()
+    except Exception as e:
+        print(f"[REDIS ERROR] Failed to write to Redis: {e}", flush=True)
+
+
+async def write_redis_state(key: str, state_dict: dict):
+    """Writes status to Redis asynchronously without blocking the event loop."""
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, _sync_write_redis, key, state_dict)
+    except Exception as e:
+        print(f"[REDIS ASYNC ERROR] Failed to spawn executor: {e}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +82,15 @@ async def resource_monitor(stop_event: asyncio.Event, stats: dict, interval: int
 # MAIN
 # ---------------------------------------------------------------------------
 async def main():
+    await write_redis_state(
+        f"encode:{config.GITHUB_RUN_ID}",
+        {
+            "file_name": config.FILE_NAME,
+            "status": "starting",
+            "phase": "STARTING",
+            "last_updated": time.time()
+        }
+    )
     # 1. PRE-FLIGHT DISK CHECK
     if os.path.exists(config.SOURCE):
         total, used, free = shutil.disk_usage("/")
@@ -357,6 +396,7 @@ async def main():
     start_time        = time.time()
     last_progress_pct = -1
     last_update_time  = 0
+    last_redis_time   = 0
     last_ui_text      = None   # latest snapshot; pushed to TG when it connects mid-encode
 
     with open(config.LOG_FILE, "w") as f_log:
@@ -379,8 +419,30 @@ async def main():
 
                     milestone   = int(percent // 10) * 10
                     now         = time.time()
-                    pct_crossed = milestone > last_progress_pct
-                    time_due    = now - last_update_time >= 25
+
+                    # Write to Redis every 5 seconds (fast and unlimited!)
+                    if now - last_redis_time >= 5:
+                        last_redis_time = now
+                        redis_payload = {
+                            "file_name": config.FILE_NAME,
+                            "percent": percent,
+                            "elapsed": elapsed,
+                            "speed": f"{speed:.2f}x",
+                            "fps": fps,
+                            "eta": eta,
+                            "curr_sec": curr_sec,
+                            "duration": duration,
+                            "crf": final_crf,
+                            "preset": final_preset,
+                            "res_label": res_label,
+                            "size_mb": size_mb,
+                            "cpu": monitor_stats.get("sys_cpu"),
+                            "ram": monitor_stats.get("sys_ram"),
+                            "phase": "ENCODING",
+                            "status": "active",
+                            "last_updated": now
+                        }
+                        asyncio.create_task(write_redis_state(f"encode:{config.GITHUB_RUN_ID}", redis_payload))
 
                     scifi_ui     = get_encode_ui(
                         config.FILE_NAME, speed, fps, elapsed, eta,
@@ -394,7 +456,8 @@ async def main():
                     )
                     last_ui_text = scifi_ui   # always keep the freshest snapshot
 
-                    if pct_crossed or time_due:
+                    # Strict 30s throttle on Telegram message edits to avoid rate-limiting
+                    if now - last_update_time >= 30:
                         last_progress_pct = milestone
                         last_update_time  = now
                         # Only sends if TG is already ready; otherwise silently buffered
@@ -600,6 +663,22 @@ async def main():
             reply_markup=buttons
         )
 
+        # Write success status to Redis
+        await write_redis_state(
+            f"encode:{config.GITHUB_RUN_ID}",
+            {
+                "file_name": config.FILE_NAME,
+                "status": "completed",
+                "phase": "COMPLETED",
+                "percent": 100.0,
+                "elapsed": total_mission_time,
+                "vmaf": vmaf_val,
+                "ssim": ssim_val,
+                "size_mb": final_size,
+                "last_updated": time.time()
+            }
+        )
+
         # CLEANUP
         try: await status.delete()
         except: pass
@@ -611,6 +690,19 @@ async def main():
         import traceback
         tb = traceback.format_exc()
         print(f"[FATAL] Unexpected error: {exc}\n{tb}")
+        
+        # Write failure status to Redis
+        await write_redis_state(
+            f"encode:{config.GITHUB_RUN_ID}",
+            {
+                "file_name": config.FILE_NAME,
+                "status": "failed",
+                "phase": "FAILED",
+                "error": f"{type(exc).__name__}: {exc}",
+                "last_updated": time.time()
+            }
+        )
+
         elapsed_total = time.time() - start_time
         reason = (
             f"Unexpected error after {format_time(elapsed_total)}:\n"

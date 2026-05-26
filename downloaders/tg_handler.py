@@ -33,8 +33,8 @@ async def progress(current, total, app, chat_id, message, start_time):
         progress.last_update = 0
 
     now = time.time()
-    # Throttle log + UI updates to 3 seconds unless it's the very first or final callback
-    if now - progress.last_update < 3 and current != total:
+    # Throttle log + UI updates to 30 seconds unless it's the very first or final callback
+    if now - progress.last_update < 30 and current != total:
         return
 
     progress.last_update = now

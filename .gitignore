@@ -20,3 +20,9 @@ output.mkv
 
 # Logs
 encode_log.txt
+
+# Local temporary binaries & credentials
+cloudflared
+config.json
+.antigravitycli/
+node_modules/

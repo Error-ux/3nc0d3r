@@ -33,6 +33,11 @@ async def progress(current, total, app, chat_id, message, start_time):
         progress.last_update = 0
 
     now = time.time()
+    # If progress updates are muted in Telegram channels, bypass intermediate edits
+    mute_progress = os.getenv("TG_MUTE_PROGRESS", "true").lower() == "true"
+    if mute_progress and current != total:
+        return
+
     # Throttle log + UI updates to dynamic interval seconds unless it's the very first or final callback
     interval = int(os.getenv("TG_PROGRESS_INTERVAL", "120"))
     if now - progress.last_update < interval and current != total:

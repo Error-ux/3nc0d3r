@@ -98,6 +98,11 @@ async def tg_edit(app, chat_id, msg_id, text, reply_markup=None):
 async def dl_progress(current, total, app, chat_id, status_msg, start_time):
     if total <= 0: return
     now = time.time()
+    # If progress updates are muted in Telegram channels, bypass intermediate edits
+    mute_progress = os.getenv("TG_MUTE_PROGRESS", "true").lower() == "true"
+    if mute_progress and current != total:
+        return
+
     if not hasattr(dl_progress, "last_update"): dl_progress.last_update = 0
     interval = int(os.getenv("TG_PROGRESS_INTERVAL", "120"))
     if now - dl_progress.last_update < interval and current != total:

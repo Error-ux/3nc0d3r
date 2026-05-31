@@ -97,6 +97,11 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     global last_up_update
     now = time.time()
 
+    # If progress updates are muted in Telegram channels, bypass upload edits
+    mute_progress = os.getenv("TG_MUTE_PROGRESS", "true").lower() == "true"
+    if mute_progress:
+        return
+
     interval = int(os.getenv("TG_PROGRESS_INTERVAL", "120"))
     if now - last_up_update < interval:
         return

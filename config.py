@@ -67,6 +67,10 @@ os.environ["TG_CHAT_ID"] = str(CHAT_ID)
 TG_PROGRESS_INTERVAL = int(os.getenv("TG_PROGRESS_INTERVAL", "120").strip() or "120")
 os.environ["TG_PROGRESS_INTERVAL"] = str(TG_PROGRESS_INTERVAL)
 
+# Mute intermediate Telegram progress edits (set to True to use Web Dashboard exclusively for live tracking)
+TG_MUTE_PROGRESS = os.getenv("TG_MUTE_PROGRESS", "true").lower() == "true"
+os.environ["TG_MUTE_PROGRESS"] = str(TG_MUTE_PROGRESS).lower()
+
 FILE_NAME = os.getenv("FILE_NAME", "output.mkv")
 SESSION_NAME = os.getenv("SESSION_NAME", "enc_session")
 

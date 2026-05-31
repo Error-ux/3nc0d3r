@@ -142,12 +142,12 @@
 
         main {
             flex: 1;
-            max-width: 1600px;
+            max-width: 1000px;
             width: 100%;
             margin: 0 auto;
             padding: 2rem;
             display: grid;
-            grid-template-columns: 500px 1fr;
+            grid-template-columns: 1fr;
             gap: 2rem;
             z-index: 20;
         }
@@ -155,6 +155,7 @@
         @media (max-width: 1024px) {
             main {
                 grid-template-columns: 1fr;
+                padding: 1rem;
             }
         }
 
@@ -654,192 +655,10 @@
     </header>
 
     <main>
-        <!-- Left Panel: Controls Form -->
-        <section class="terminal-panel">
-            <div class="panel-header">
-                <span>[ 01 // CORE.SYS.INPUTS ]</span>
-            </div>
-            
-            <form id="pipeline-form" onsubmit="handleFormSubmit(event)">
-                
-                <div class="form-group">
-                    <div class="cli-prompt-line">
-                        <span class="cli-prompt">$ set video_source_url :</span>
-                    </div>
-                    <input type="text" id="video-url" placeholder="Insert Telegram/M3U8/Direct URL..." required>
-                </div>
-                
-                <div class="form-group">
-                    <div class="cli-prompt-line">
-                        <span class="cli-prompt">$ set custom_filename :</span>
-                    </div>
-                    <input type="text" id="custom-name" placeholder="Override output filename (optional)...">
-                </div>
-
-                <div class="form-row">
-                    <!-- Resolution Selector -->
-                    <div class="form-group">
-                        <div class="cli-prompt-line">
-                            <span class="cli-prompt">$ set target_resolution :</span>
-                        </div>
-                        <select id="resolution" onchange="toggleCustomResolution()">
-                            <option value="">Original Height</option>
-                            <option value="1080">1080p (FHD)</option>
-                            <option value="720">720p (HD)</option>
-                            <option value="480">480p (SD)</option>
-                            <option value="360">360p (Low)</option>
-                            <option value="240">240p (Ultra-Low)</option>
-                            <option value="custom">Custom Height...</option>
-                        </select>
-                        <div id="custom-resolution-box" class="custom-input-box" style="display: none;">
-                            <div class="cli-prompt-line" style="margin-top:0.4rem;">
-                                <span class="cli-prompt cli-prompt-blue">> custom_height :</span>
-                            </div>
-                            <input type="number" id="custom-res-val" placeholder="e.g. 144" min="80" max="4320">
-                        </div>
-                    </div>
-
-                    <!-- Audio Mode Selector -->
-                    <div class="form-group">
-                        <div class="cli-prompt-line">
-                            <span class="cli-prompt">$ set audio_codec_mode :</span>
-                        </div>
-                        <select id="audio-mode" onchange="toggleAudioBitrate()">
-                            <option value="opus">Opus Stereo Re-encode</option>
-                            <option value="copy">Direct Copy (No Re-encode)</option>
-                        </select>
-                        <div id="audio-bitrate-box" class="custom-input-box">
-                            <div class="cli-prompt-line" style="margin-top:0.4rem;">
-                                <span class="cli-prompt cli-prompt-blue">> target_bitrate :</span>
-                            </div>
-                            <select id="audio-bitrate">
-                                <option value="48k">48k (Standard)</option>
-                                <option value="32k">32k (Low)</option>
-                                <option value="64k">64k (Standard Plus)</option>
-                                <option value="96k">96k (High Quality)</option>
-                                <option value="128k">128k (Premium)</option>
-                                <option value="192k">192k (Audiophile)</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- CRF Slider -->
-                <div class="slider-container">
-                    <div class="slider-header">
-                        <label for="crf">$ crf_quality_factor</label>
-                        <span class="slider-val" id="crf-val">48</span>
-                    </div>
-                    <input type="range" id="crf" min="20" max="63" value="48" oninput="updateSliderVal('crf')">
-                </div>
-
-                <!-- Preset Slider -->
-                <div class="slider-container">
-                    <div class="slider-header">
-                        <label for="preset">$ svtav1_preset_speed</label>
-                        <span class="slider-val" id="preset-val">6</span>
-                    </div>
-                    <input type="range" id="preset" min="1" max="13" value="6" oninput="updateSliderVal('preset')">
-                </div>
-
-                <!-- Film Grain Slider -->
-                <div class="slider-container">
-                    <div class="slider-header">
-                        <label for="grain">$ film_grain_synthesis</label>
-                        <span class="slider-val" id="grain-val">0</span>
-                    </div>
-                    <input type="range" id="grain" min="0" max="50" value="0" oninput="updateSliderVal('grain')">
-                </div>
-
-                <!-- switches -->
-                <div class="switch-container">
-                    <div>
-                        <label style="margin-bottom: 0.1rem;">$ verify_vmaf_ssim</label>
-                        <span>Analyze quality metrics against source</span>
-                    </div>
-                    <label class="switch">
-                        <input type="checkbox" id="run-vmaf" checked>
-                        <span class="slider-switch"></span>
-                    </label>
-                </div>
-
-                <div class="switch-container">
-                    <div>
-                        <label style="margin-bottom: 0.1rem;">$ upload_to_cloud</label>
-                        <span>Enable Gofile backup mirrors</span>
-                    </div>
-                    <label class="switch">
-                        <input type="checkbox" id="run-upload">
-                        <span class="slider-switch"></span>
-                    </label>
-                </div>
-
-                <!-- Anime Structured Rename Accordion -->
-                <div style="background: rgba(0,0,0,0.6); border: 1px solid rgba(51, 255, 51, 0.15); padding: 1rem; margin-top: 1rem;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none;" onclick="toggleAnimeRename()">
-                        <label style="margin-bottom: 0; cursor: pointer; display: flex; align-items: center; gap: 0.6rem;">
-                            $ anime_structured_renamer
-                        </label>
-                        <span id="anime-arrow" style="font-size: 0.8rem; color: var(--term-green); transition: transform 0.3s;">▼</span>
-                    </div>
-                    <div id="anime-rename-fields" style="display: none; margin-top: 1.2rem; border-top: 1px dashed rgba(51, 255, 51, 0.15); padding-top: 1rem; gap: 0.8rem; flex-direction: column;">
-                        <div class="form-group form-group-amber">
-                            <div class="cli-prompt-line">
-                                <span class="cli-prompt">> anime_series_title :</span>
-                            </div>
-                            <input type="text" id="anime-name" placeholder="e.g. Medalist">
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group form-group-amber">
-                                <div class="cli-prompt-line">
-                                    <span class="cli-prompt">> season_num :</span>
-                                </div>
-                                <input type="text" id="season" value="1">
-                            </div>
-                            <div class="form-group form-group-amber">
-                                <div class="cli-prompt-line">
-                                    <span class="cli-prompt">> episode_num :</span>
-                                </div>
-                                <input type="text" id="episode" value="1">
-                            </div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group form-group-amber">
-                                <div class="cli-prompt-line">
-                                    <span class="cli-prompt">> audio_type_tag :</span>
-                                </div>
-                                <select id="audio-type">
-                                    <option value="Auto">Auto Detect</option>
-                                    <option value="Sub">Subtitled</option>
-                                    <option value="Dual">Dual-Audio</option>
-                                    <option value="Multi">Multi-Audio</option>
-                                </select>
-                            </div>
-                            <div class="form-group form-group-amber">
-                                <div class="cli-prompt-line">
-                                    <span class="cli-prompt">> content_class :</span>
-                                </div>
-                                <select id="content-type">
-                                    <option value="Anime">Anime Series</option>
-                                    <option value="Donghua">Donghua</option>
-                                    <option value="Hentai">Hentai</option>
-                                    <option value="AMV">AMV / HMV</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <button class="btn-launch-terminal" type="submit" style="margin-top: 1.5rem;">
-                    $ execute_pipeline <span class="cursor-blink">▋</span>
-                </button>
-            </form>
-        </section>
-
-        <!-- Right Panel: Monitoring Panel -->
-        <section class="terminal-panel terminal-panel-amber">
+        <!-- Real-Time Telemetry Monitor Panel (Strict Read-Only) -->
+        <section class="terminal-panel terminal-panel-amber" style="width: 100%;">
             <div class="panel-header amber">
-                <span>[ 02 // REAL-TIME.TELEMETRY ]</span>
+                <span>[ NEOFLOW // REAL-TIME TELEMETRY MONITOR ]</span>
             </div>
             
             <div class="monitor-container">
@@ -847,8 +666,8 @@
                     <!-- Cards will be populated dynamically -->
                 </div>
                 <div id="empty-state" class="empty-state" style="display: none;">
-                    <p>WARNING: TELEMETRY IDLE</p>
-                    <p style="color: rgba(255, 176, 0, 0.6); font-size: 0.75rem;">Awaiting dispatch sequence from core inputs panel...</p>
+                    <p>SYSTEM STATE: AWAITING INCOMING TELEMETRY</p>
+                    <p style="color: rgba(255, 176, 0, 0.6); font-size: 0.75rem; margin-top: 0.5rem;">Launch a pipeline run (e.g. via Telegram bot or GHA trigger) to view live progress here.</p>
                 </div>
             </div>
         </section>

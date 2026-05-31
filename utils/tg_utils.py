@@ -1,55 +1,141 @@
 import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))  # repo root
-
-"""
-tg_utils.py
-Shared Telegram helpers for main.py and upload.py.
-
-Extracted to avoid copy-paste drift between the two phases.
-Exports:
-    ALL_LANES, _resolve_lane, _resolve_session_names
-    connect_telegram(tg_state, tg_ready, label)
-    tg_edit(tg_state, tg_ready, text, reply_markup=None)
-    tg_notify_failure(tg_state, tg_ready, file_name, reason)
-"""
-
-import asyncio
 import os
+import asyncio
+import math
+import time
+from pathlib import Path
 
-from pyrogram import Client, enums
+# repo root
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from pyrogram import Client, enums, raw, types, utils
 from pyrogram.errors import FloodWait
+
+# Patch for modern large Telegram IDs
+utils.MIN_CHANNEL_ID = -1009999999999999
 
 import config
 from utils.ui import get_failure_ui
 
+_active_tg_state = None
+
+# Monkeypatch Pyrogram Client.save_file to support pre-uploaded InputFile/InputFileBig objects
+original_save_file = Client.save_file
+
+async def patched_save_file(self, path, progress=None, progress_args=()):
+    if isinstance(path, (raw.types.InputFile, raw.types.InputFileBig)):
+        return path
+    return await original_save_file(self, path, progress=progress, progress_args=progress_args)
+
+Client.save_file = patched_save_file
 
 # ---------------------------------------------------------------------------
-# LANE RESOLUTION
+# FAST MEDIA HELPERS
 # ---------------------------------------------------------------------------
-ALL_LANES = [chr(ord("A") + i) for i in range(20)]  # ["A", "B", ..., "T"]
+
+async def fast_upload(client: Client, file_path: str, progress_callback=None, progress_args=None):
+    """
+    Uploads a file in parallel chunks for maximum speed.
+    Returns an InputFile object ready for send_document.
+    """
+    file_size = os.path.getsize(file_path)
+    file_name = os.path.basename(file_path)
+    chunk_size = 512 * 1024
+    total_parts = math.ceil(file_size / chunk_size)
+    is_big = file_size > 10 * 1024 * 1024
+    
+    # Generate a random 8-byte file ID
+    file_id = int.from_bytes(os.urandom(8), "little", signed=True)
+    
+    semaphore = asyncio.Semaphore(16)
+    uploaded_parts = 0
+    
+    async def upload_worker(part_index, offset):
+        nonlocal uploaded_parts
+        async with semaphore:
+            with open(file_path, 'rb') as f:
+                f.seek(offset)
+                chunk = f.read(chunk_size)
+            
+            if is_big:
+                await client.invoke(
+                    raw.functions.upload.SaveBigFilePart(
+                        file_id=file_id,
+                        file_part=part_index,
+                        file_total_parts=total_parts,
+                        bytes=chunk
+                    )
+                )
+            else:
+                await client.invoke(
+                    raw.functions.upload.SaveFilePart(
+                        file_id=file_id,
+                        file_part=part_index,
+                        bytes=chunk
+                    )
+                )
+            
+            uploaded_parts += 1
+            if progress_callback:
+                # throttled UI update handled by the callback itself usually
+                await progress_callback(min(uploaded_parts * chunk_size, file_size), file_size, *progress_args)
+
+    tasks = [upload_worker(i, i * chunk_size) for i in range(total_parts)]
+    await asyncio.gather(*tasks)
+
+    if is_big:
+        return raw.types.InputFileBig(id=file_id, parts=total_parts, name=file_name)
+    else:
+        return raw.types.InputFile(id=file_id, parts=total_parts, name=file_name, md5_checksum="")
 
 
+# ---------------------------------------------------------------------------
+# LANE RESOLUTION (unlimited unique lanes: A, B, ..., Z, AA, AB, ...)
+# ---------------------------------------------------------------------------
 def _resolve_lane(run_number: int) -> str:
-    return ALL_LANES[run_number % 20]
+    """Convert run number to unique alphabetic lane: 1→A, 26→Z, 27→AA, 28→AB, ..."""
+    if run_number <= 0:
+        return "A"
+    result = ""
+    n = run_number
+    while n > 0:
+        n -= 1
+        result = chr(ord('A') + (n % 26)) + result
+        n //= 26
+    return result
 
 
 def _resolve_session_names() -> list[str]:
     """
     Return an ordered list of session names to try, most-preferred first.
-    Own lane tried first, then cross-lane fallbacks, then legacy bare session.
     """
     run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
     lane = _resolve_lane(run_number)
     print(f"TG session lane: {lane} (run #{run_number})")
 
-    other_lanes = [l for l in ALL_LANES if l != lane]
+    session_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tg_session_dir"))
     sessions = []
-    sessions.append(f"tg_session_dir/enc_session_{lane}")
-    sessions.append(f"tg_session_dir/tg_dl_session_{lane}")
-    for other in other_lanes:
-        sessions.append(f"tg_session_dir/enc_session_{other}")
-        sessions.append(f"tg_session_dir/tg_dl_session_{other}")
+    sessions.append(os.path.join(session_dir, f"enc_session_{lane}"))
+    sessions.append(os.path.join(session_dir, f"tg_dl_session_{lane}"))
+    sessions.append(config.SESSION_NAME)
+    return sessions
+
+
+def _get_all_session_names() -> list[str]:
+    """
+    Return all available lane session names ordered by priority for session lane rotation.
+    """
+    run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
+    preferred_lane = _resolve_lane(run_number)
+    
+    # Put preferred lane first, then others
+    lanes = [preferred_lane] + [l for l in ALL_LANES if l != preferred_lane]
+    
+    session_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tg_session_dir"))
+    sessions = []
+    for l in lanes:
+        sessions.append(os.path.join(session_dir, f"enc_session_{l}"))
+        sessions.append(os.path.join(session_dir, f"tg_dl_session_{l}"))
     sessions.append(config.SESSION_NAME)
     return sessions
 
@@ -60,13 +146,12 @@ def _resolve_session_names() -> list[str]:
 async def connect_telegram(tg_state: dict, tg_ready: asyncio.Event, label: str):
     """
     Connect to Telegram trying each session in priority order.
-    FloodWait on a session → skip to next. If all flooded → sleep shortest
-    wait then retry. Sets tg_state['app'] and tg_state['status'] on success.
     """
     session_names = _resolve_session_names()
     flood_waits: dict[str, int] = {}
 
     app = None
+    chosen_session = None
     for session_name in session_names:
         try:
             candidate = Client(
@@ -74,16 +159,19 @@ async def connect_telegram(tg_state: dict, tg_ready: asyncio.Event, label: str):
                 api_id=config.API_ID,
                 api_hash=config.API_HASH,
                 bot_token=config.BOT_TOKEN,
+                max_concurrent_transmissions=16
             )
             await candidate.start()
             app = candidate
+            chosen_session = session_name
             print(f"TG auth OK with session: {session_name}")
             break
-        except FloodWait as e:
-            flood_waits[session_name] = e.value
-            print(f"FloodWait {e.value}s on '{session_name}' — trying next...")
-            continue
         except Exception as e:
+            if "FloodWait" in type(e).__name__ or getattr(e, "value", None) is not None:
+                wait_val = getattr(e, "value", 10)
+                flood_waits[session_name] = wait_val
+                print(f"FloodWait {wait_val}s on '{session_name}' — trying next...")
+                continue
             print(f"TG auth error on '{session_name}': {e} — trying next...")
             continue
 
@@ -101,16 +189,18 @@ async def connect_telegram(tg_state: dict, tg_ready: asyncio.Event, label: str):
                     api_id=config.API_ID,
                     api_hash=config.API_HASH,
                     bot_token=config.BOT_TOKEN,
+                    max_concurrent_transmissions=16
                 )
                 await candidate.start()
                 app = candidate
+                chosen_session = best_session
                 print(f"TG auth OK (post-flood attempt {attempt}): {best_session}")
                 break
-            except FloodWait as e:
-                wait_secs = e.value
-                print(f"Another FloodWait: {wait_secs}s — retrying...")
-                continue
             except Exception as e:
+                if "FloodWait" in type(e).__name__ or getattr(e, "value", None) is not None:
+                    wait_secs = getattr(e, "value", 10)
+                    print(f"Another FloodWait: {wait_secs}s — retrying...")
+                    continue
                 print(f"TG auth failed on post-flood attempt {attempt}: {e}")
                 return
 
@@ -124,16 +214,26 @@ async def connect_telegram(tg_state: dict, tg_ready: asyncio.Event, label: str):
             f"<b>[ SYSTEM ONLINE ] {label}</b>",
             parse_mode=enums.ParseMode.HTML,
         )
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-        status = await app.send_message(
-            config.CHAT_ID,
-            f"<b>[ SYSTEM ONLINE ] {label}</b>",
-            parse_mode=enums.ParseMode.HTML,
-        )
+    except Exception as e:
+        if "FloodWait" in type(e).__name__ or getattr(e, "value", None) is not None:
+            wait_val = getattr(e, "value", 10)
+            await asyncio.sleep(wait_val)
+            status = await app.send_message(
+                config.CHAT_ID,
+                f"<b>[ SYSTEM ONLINE ] {label}</b>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        else:
+            raise e
 
     tg_state["app"] = app
     tg_state["status"] = status
+    tg_state["session_name"] = chosen_session
+    tg_state["label"] = label
+    
+    global _active_tg_state
+    _active_tg_state = tg_state
+    
     tg_ready.set()
     print("Telegram connected.")
 
@@ -153,10 +253,132 @@ async def tg_edit(tg_state: dict, tg_ready: asyncio.Event, text: str, reply_mark
         if reply_markup:
             kwargs["reply_markup"] = reply_markup
         await app.edit_message_text(config.CHAT_ID, status.id, text, **kwargs)
-    except FloodWait as e:
-        await asyncio.sleep(e.value + 1)
-    except Exception:
-        pass
+    except Exception as e:
+        if "FloodWait" in type(e).__name__ or getattr(e, "value", None) is not None:
+            wait_val = getattr(e, "value", 10)
+            await asyncio.sleep(wait_val + 1)
+        else:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Telegram Session Lane Rotator (scans existing cached sessions on disk)
+# ---------------------------------------------------------------------------
+async def rotate_session_lane(tg_state: dict) -> bool:
+    """
+    On FloodWait, scans tg_session_dir/ for existing cached .session files from
+    previous runs and tries connecting to them. Since all sessions use the same
+    bot token, the rotated client retains full ownership of existing messages.
+    """
+    current_name = tg_state.get("session_name")
+    if not current_name:
+        print("[SESSION ROTATE ERROR] No active session_name in tg_state.")
+        return False
+
+    session_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tg_session_dir"))
+    tried = tg_state.get("tried_sessions", set())
+    tried.add(current_name)
+
+    # Scan disk for all existing .session files
+    candidates = []
+    if os.path.isdir(session_dir):
+        for f in sorted(os.listdir(session_dir)):
+            if f.endswith(".session"):
+                full_path = os.path.join(session_dir, f[:-8])  # strip .session
+                if full_path not in tried:
+                    candidates.append(full_path)
+
+    # Also try the bare session name as fallback
+    if config.SESSION_NAME not in tried:
+        candidates.append(config.SESSION_NAME)
+
+    if not candidates:
+        print("[SESSION ROTATE] No more existing session files to try.")
+        return False
+
+    # Close old app safely
+    old_app = tg_state.get("app")
+    if old_app:
+        try:
+            await old_app.stop()
+        except Exception:
+            pass
+
+    # Try each candidate until one connects
+    for next_session in candidates:
+        tried.add(next_session)
+        tg_state["tried_sessions"] = tried
+        print(f"[SESSION ROTATE] Trying existing session: {os.path.basename(next_session)}...")
+
+        try:
+            candidate = Client(
+                next_session,
+                api_id=config.API_ID,
+                api_hash=config.API_HASH,
+                bot_token=config.BOT_TOKEN,
+                max_concurrent_transmissions=16
+            )
+            await candidate.start()
+            tg_state["app"] = candidate
+            tg_state["session_name"] = next_session
+            print(f"✅ [SESSION ROTATE] Swapped to existing session: {os.path.basename(next_session)}")
+            return True
+        except Exception as e:
+            print(f"[SESSION ROTATE] Failed on {os.path.basename(next_session)}: {e}")
+            continue
+
+    print("[SESSION ROTATE] All existing sessions exhausted.")
+    return False
+
+
+# ---------------------------------------------------------------------------
+# FLOODWAIT RETRY PROTECTION HELPER (WITH SESSION ROTATION INTEGRATION)
+# ---------------------------------------------------------------------------
+async def run_with_flood_retry(func, *args, **kwargs):
+    """
+    Executes a Pyrogram method with automatic FloodWait retry protection.
+    Features Session Lane Rotation to dynamically swap lane sessions under the same bot,
+    bypassing rate limits immediately if fallbacks exist.
+    """
+    retries = 0
+    while True:
+        try:
+            # Dynamically fetch the current bound method in case bot rotation swapped the client
+            global _active_tg_state
+            if _active_tg_state and hasattr(func, "__self__"):
+                active_app = _active_tg_state.get("app")
+                if active_app and func.__self__ is not active_app:
+                    method_name = func.__name__
+                    # Re-bind the function call to the new active client instance!
+                    func = getattr(active_app, method_name)
+            
+            return await func(*args, **kwargs)
+        except Exception as e:
+            # 100% drift-proof FloodWait catching
+            if "FloodWait" in type(e).__name__ or getattr(e, "value", None) is not None:
+                wait_time = getattr(e, "value", 10)
+                
+                # Attempt bot session lane rotation to bypass the wait completely!
+                if _active_tg_state:
+                    rotated = await rotate_session_lane(_active_tg_state)
+                    if rotated:
+                        print("[FLOODWAIT] Successfully rotated to next session lane. Retrying immediately...", flush=True)
+                        continue
+                
+                # Fallback to sleeping if rotation was not possible/available
+                wait_time = wait_time + 3
+                print(f"[FLOODWAIT] Rate limit hit. Sleeping for {wait_time}s before retrying...", flush=True)
+                await asyncio.sleep(wait_time)
+                continue
+                
+            err_str = str(e).lower()
+            if any(term in err_str for term in ["connection", "timeout", "network", "reset", "broken pipe"]):
+                retries += 1
+                wait_time = min(5 * retries, 60)
+                print(f"[RETRY] Network/transient error: {e}. Retrying in {wait_time}s...", flush=True)
+                await asyncio.sleep(wait_time)
+            else:
+                raise e
 
 
 # ---------------------------------------------------------------------------
@@ -164,26 +386,24 @@ async def tg_edit(tg_state: dict, tg_ready: asyncio.Event, text: str, reply_mark
 # ---------------------------------------------------------------------------
 async def tg_notify_failure(tg_state: dict, tg_ready: asyncio.Event,
                             file_name: str, reason: str):
-    """
-    Edit status message to failure UI and attach log file if present.
-    Safe to call even if TG never connected.
-    """
     app    = tg_state.get("app")
     status = tg_state.get("status")
     if not app or not status:
         print(f"[TG-FAIL] TG unavailable — reason: {reason}")
         return
     try:
-        await app.edit_message_text(
+        await run_with_flood_retry(
+            app.edit_message_text,
             config.CHAT_ID, status.id,
             get_failure_ui(file_name, reason),
             parse_mode=enums.ParseMode.HTML,
         )
     except Exception as e:
         print(f"[TG-FAIL] Could not edit status message: {e}")
-    if config.LOG_FILE and __import__("os").path.exists(config.LOG_FILE):
+    if config.LOG_FILE and os.path.exists(config.LOG_FILE):
         try:
-            await app.send_document(
+            await run_with_flood_retry(
+                app.send_document,
                 config.CHAT_ID, config.LOG_FILE,
                 caption="<b>FULL MISSION LOG</b>",
                 parse_mode=enums.ParseMode.HTML,

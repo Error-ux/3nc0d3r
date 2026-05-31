@@ -112,41 +112,13 @@ jobs:
           path: /usr/local/bin/ff*
           key: ffmpeg-master-linux64-gpl-${{ runner.os }}
 
-      # ─────────────────────────────────────────────────────────────────────
-      # CACHE: apt packages (aria2, mkvtoolnix, curl)
-      # Cached by runner OS + a fixed key. Busting the key forces a fresh install.
-      # ─────────────────────────────────────────────────────────────────────
-      - name: 📦 Cache APT Packages
-        id: apt-cache
-        uses: actions/cache@v4
-        with:
-          path: /tmp/apt-cache
-          key: apt-packages-${{ runner.os }}-aria2-mkvtoolnix-curl-v1
-
       - name: 🛠 Install System Tools
         run: |
-          if [ "${{ steps.apt-cache.outputs.cache-hit }}" = "true" ]; then
-            echo "📦 Restoring apt packages from cache..."
-            sudo cp -rn /tmp/apt-cache/usr /
-            sudo ldconfig
-            echo "✅ apt packages restored"
-          else
-            echo "📥 Installing apt packages..."
-            # MKVToolNix from official repo — avoids libmatroska version mismatches
-            # that occur with the Ubuntu apt version (libmatroska.so.7 errors).
-            sudo wget -q -O /usr/share/keyrings/gpg-pub-moritzbunkus.gpg \
-              https://mkvtoolnix.download/gpg-pub-moritzbunkus.gpg
-            echo "deb [signed-by=/usr/share/keyrings/gpg-pub-moritzbunkus.gpg] https://mkvtoolnix.download/ubuntu/ $(lsb_release -cs) main" \
-              | sudo tee /etc/apt/sources.list.d/mkvtoolnix.list
-            sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl
-            echo "💾 Saving apt packages to cache..."
-            mkdir -p /tmp/apt-cache/usr
-            for pkg in aria2 mkvtoolnix curl; do
-              dpkg -L $pkg | while read f; do
-                [ -f "$f" ] && sudo cp --parents "$f" /tmp/apt-cache/ 2>/dev/null || true
-              done
-            done
-          fi
+          sudo wget -q -O /usr/share/keyrings/gpg-pub-moritzbunkus.gpg \
+            https://mkvtoolnix.download/gpg-pub-moritzbunkus.gpg
+          echo "deb [signed-by=/usr/share/keyrings/gpg-pub-moritzbunkus.gpg] https://mkvtoolnix.download/ubuntu/ $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/mkvtoolnix.list
+          sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl
 
       # ─────────────────────────────────────────────────────────────────────
       # INSTALL: yt-dlp as standalone binary (no Python path dependency)
@@ -201,17 +173,27 @@ jobs:
       - name: 🔀 Resolve Lane
         id: lane
         run: |
-          LANES=(A B C D E F G H I J K L M N O P Q R S T)
-          IDX=$(( ${{ github.run_number }} % 20 ))
-          LANE="${LANES[$IDX]}"
+          # Base-26 conversion: run 1→A, 26→Z, 27→AA, 28→AB, ...
+          num=${{ github.run_number }}
+          LANE=""
+          n=$num
+          while [ $n -gt 0 ]; do
+            n=$((n - 1))
+            r=$((n % 26))
+            c=$(printf "\\$(printf '%03o' $((65 + r)))")
+            LANE="${c}${LANE}"
+            n=$((n / 26))
+          done
+          [ -z "$LANE" ] && LANE="A"
           echo "name=lane-${LANE}" >> $GITHUB_OUTPUT
-          echo "Lane: lane-${LANE}"
+          echo "Lane: lane-${LANE} (run #${{ github.run_number }})"
 
       - name: 💾 Restore Session Cache
         uses: actions/cache@v4
         with:
           path: tg_session_dir
           key: tg-session-${{ steps.lane.outputs.name }}
+          restore-keys: tg-session-
 
       - name: 🔑 Authorize Bot Session
         run: |
@@ -239,6 +221,8 @@ jobs:
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_CHAT_ID_OTHER: ${{ secrets.TG_CHAT_ID_OTHER }}
+          CONTENT_TYPE: ${{ github.event.inputs.content_type }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
           CUSTOM: ${{ github.event.inputs.custom_name }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
@@ -254,6 +238,7 @@ jobs:
           API_HASH: ${{ secrets.TG_API_HASH }}
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          CHAT_ID_OTHER: ${{ secrets.TG_CHAT_ID_OTHER }}
           SESSION_NAME: "enc_session"
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           USER_RES: ${{ github.event.inputs.res_choice }}
@@ -292,6 +277,8 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          CHAT_ID_OTHER: ${{ secrets.TG_CHAT_ID_OTHER }}
+          CONTENT_TYPE: ${{ github.event.inputs.content_type }}
           DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
           ENCODE_OUTCOME: ${{ steps.encode.outcome }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}

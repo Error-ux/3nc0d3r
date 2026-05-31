@@ -11,9 +11,10 @@ import os
 import json
 import subprocess
 from pathlib import Path
+import config
 
-BOT_TOKEN        = os.environ.get("BOT_TOKEN", "")
-CHAT_ID          = os.environ.get("CHAT_ID", "")
+BOT_TOKEN        = config.BOT_TOKEN
+CHAT_ID          = str(config.CHAT_ID)
 DOWNLOAD_OUTCOME = os.environ.get("DOWNLOAD_OUTCOME", "")
 ENCODE_OUTCOME   = os.environ.get("ENCODE_OUTCOME", "")
 RUN_NUMBER       = os.environ.get("GITHUB_RUN_NUMBER", "?")
@@ -79,6 +80,13 @@ def tg_send_document(filepath, caption):
 
 
 tg_send_message(message)
+
+# Send failure notification to private bot/chat
+try:
+    from utils.tg_simple import notify_private
+    notify_private(message)
+except Exception:
+    pass
 
 if log_path and log_path.exists():
     tg_send_document(str(log_path), f"📋 {phase} phase log — Run #{RUN_NUMBER}")

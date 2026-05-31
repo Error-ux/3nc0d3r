@@ -23,10 +23,11 @@ import urllib.parse
 # ─────────────────────────────────────────────────────────────────────────────
 # ENV
 # ─────────────────────────────────────────────────────────────────────────────
+import config
 URL        = os.environ.get("VIDEO_URL", "").strip()
 CUSTOM     = os.environ.get("CUSTOM", "").strip()
-BOT_TOKEN  = os.environ.get("TG_BOT_TOKEN", "").strip()
-CHAT_ID    = os.environ.get("TG_CHAT_ID", "").strip()
+BOT_TOKEN  = config.BOT_TOKEN
+CHAT_ID    = str(config.CHAT_ID)
 RUN_NUMBER = os.environ.get("GITHUB_RUN_NUMBER", "?")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -125,6 +126,16 @@ def detect_referer(url):
     return None, None
 
 
+def get_source_size_mb():
+    try:
+        import os
+        if os.path.exists("source.mkv"):
+            return os.path.getsize("source.mkv") / 1_048_576
+    except Exception:
+        pass
+    return 0.0
+
+
 def notify_download_start(method, output_name):
     """Send a Telegram message announcing the download has started."""
     if not BOT_TOKEN or not CHAT_ID:
@@ -142,7 +153,7 @@ def notify_download_start(method, output_name):
         "</code>"
     )
     payload = json.dumps({"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"})
-    subprocess.run(
+    result = subprocess.run(
         [
             "curl", "-s", "-X", "POST",
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -150,9 +161,31 @@ def notify_download_start(method, output_name):
             "-d", payload,
         ],
         check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True,
     )
+    try:
+        data = json.loads(result.stdout.decode())
+        if data.get("ok"):
+            msg_id = data["result"]["message_id"]
+            with open("dl_msg_id.txt", "w") as f:
+                f.write(str(msg_id))
+    except Exception:
+        pass
+
+    # Send phase notification to private bot/chat
+    try:
+        from utils.tg_simple import notify_private
+        truncated_url = URL[:80] + '...' if len(URL) > 80 else URL
+        notify_private(
+            f"📥 <b>[ DOWNLOAD STARTED ]</b>\n\n"
+            f"📄 <b>FILE:</b> <code>{output_name}</code>\n"
+            f"⚙️ <b>VIA:</b> <code>{method}</code>\n"
+            f"🔢 <b>RUN:</b> <code>#{RUN_NUMBER}</code>\n"
+            f"🔗 <b>SOURCE:</b> <code>{truncated_url}</code>"
+        )
+    except Exception:
+        pass
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -162,7 +195,7 @@ def notify_download_start(method, output_name):
 def download_telegram():
     """Delegate to tg_handler.py for all Telegram URLs."""
     print("📡 Telegram URL detected → tg_handler.py", flush=True)
-    run(["python3", "downloaders/tg_handler.py"], label="TG")
+    run(["python3", "-u", "downloaders/tg_handler.py"], label="TG")
 
 
 def download_hls_or_platform():
@@ -192,6 +225,17 @@ def download_hls_or_platform():
         ]
         print(f"📥 kwik.cx → proxy + aria2c  [{output_name}]", flush=True)
         run(cmd, label="aria2c")
+        try:
+            from utils.tg_simple import notify_private
+            size_mb = get_source_size_mb()
+            notify_private(
+                f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n\n"
+                f"📄 <b>FILE:</b> <code>{output_name}</code>\n"
+                f"📦 <b>SIZE:</b> <code>{size_mb:.2f} MB</code>\n"
+                f"⚡ <b>STATUS:</b> Ready for Encoding."
+            )
+        except Exception:
+            pass
         return
 
     # ── HLS / other platforms → yt-dlp + aria2c ──────────────────────────────
@@ -216,6 +260,17 @@ def download_hls_or_platform():
     cmd.append(URL)
     print(f"📡 Streaming URL detected → yt-dlp  [{output_name}]", flush=True)
     run(cmd, label="yt-dlp")
+    try:
+        from utils.tg_simple import notify_private
+        size_mb = get_source_size_mb()
+        notify_private(
+            f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n\n"
+            f"📄 <b>FILE:</b> <code>{output_name}</code>\n"
+            f"📦 <b>SIZE:</b> <code>{size_mb:.2f} MB</code>\n"
+            f"⚡ <b>STATUS:</b> Ready for Encoding."
+        )
+    except Exception:
+        pass
 
 
 def download_direct():
@@ -255,6 +310,17 @@ def download_direct():
     cmd.append(resolved)
     print(f"📥 Direct download → aria2c  [{output_name}]", flush=True)
     run(cmd, label="aria2c")
+    try:
+        from utils.tg_simple import notify_private
+        size_mb = get_source_size_mb()
+        notify_private(
+            f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n\n"
+            f"📄 <b>FILE:</b> <code>{output_name}</code>\n"
+            f"📦 <b>SIZE:</b> <code>{size_mb:.2f} MB</code>\n"
+            f"⚡ <b>STATUS:</b> Ready for Encoding."
+        )
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────

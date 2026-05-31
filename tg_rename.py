@@ -41,10 +41,12 @@ import utils.ui as _ui
 
 # ── ENV ───────────────────────────────────────────────────────────────────────
 
-API_ID       = int(os.getenv("TG_API_ID",   "0").strip())
-API_HASH     = os.getenv("TG_API_HASH",     "").strip()
-BOT_TOKEN    = os.getenv("TG_BOT_TOKEN",    "").strip()
-CHAT_ID      = int(os.getenv("TG_CHAT_ID",  "0").strip())
+import config
+
+API_ID       = config.API_ID
+API_HASH     = config.API_HASH
+BOT_TOKEN    = config.BOT_TOKEN
+CHAT_ID      = config.CHAT_ID
 VIDEO_URL    = os.getenv("VIDEO_URL",        "").strip()
 
 ANIME_NAME   = os.getenv("ANIME_NAME",      "").strip()
@@ -74,11 +76,18 @@ THUMB_AT     = 0.20
 
 # ── LANE RESOLUTION ───────────────────────────────────────────────────────────
 
-_ALL_LANES = [chr(ord("A") + i) for i in range(20)]  # A–T
-
 def resolve_lane() -> str:
+    """Convert run number to unique alphabetic lane: 1→A, 26→Z, 27→AA, 28→AB, ..."""
     run_number = int(os.getenv("GITHUB_RUN_NUMBER", "0"))
-    return _ALL_LANES[run_number % 20]
+    if run_number <= 0:
+        return "A"
+    result = ""
+    n = run_number
+    while n > 0:
+        n -= 1
+        result = chr(ord('A') + (n % 26)) + result
+        n //= 26
+    return result
 
 # ── TELEGRAM HELPERS ──────────────────────────────────────────────────────────
 
@@ -87,19 +96,37 @@ async def tg_edit(app, chat_id, msg_id, text, reply_markup=None):
         kwargs = dict(parse_mode=enums.ParseMode.HTML)
         if reply_markup:
             kwargs["reply_markup"] = reply_markup
+            
+        import utils.tg_utils as tg_utils
+        if tg_utils._active_tg_state and tg_utils._active_tg_state.get("app") is not app:
+            app = tg_utils._active_tg_state["app"]
+            status = tg_utils._active_tg_state.get("status")
+            if status:
+                msg_id = status.id
+                
         await app.edit_message_text(chat_id, msg_id, text, **kwargs)
-    except FloodWait as e:
-        await asyncio.sleep(e.value + 1)
-    except Exception:
-        pass
+    except Exception as e:
+        if "FloodWait" in type(e).__name__ or getattr(e, "value", None) is not None:
+            wait_val = getattr(e, "value", 10)
+            await asyncio.sleep(wait_val + 1)
+        else:
+            pass
 
 async def dl_progress(current, total, app, chat_id, status_msg, start_time):
     if total <= 0: return
+    now = time.time()
+    # If progress updates are muted in Telegram channels, bypass intermediate edits
+    mute_progress = os.getenv("TG_MUTE_PROGRESS", "true").lower() == "true"
+    if mute_progress and current != total:
+        return
+
+    if not hasattr(dl_progress, "last_update"): dl_progress.last_update = 0
+    interval = int(os.getenv("TG_PROGRESS_INTERVAL", "15"))
+    if now - dl_progress.last_update < interval and current != total:
+        return
+    dl_progress.last_update = now
+
     pct = (current / total) * 100
-    milestone = int(pct // 5) * 5
-    if not hasattr(dl_progress, "last_pct"): dl_progress.last_pct = -1
-    if milestone <= dl_progress.last_pct: return
-    dl_progress.last_pct = milestone
     elapsed    = time.time() - start_time
     speed_mb   = (current / elapsed / 1_048_576) if elapsed > 0 else 0
     size_mb    = total / 1_048_576
@@ -117,10 +144,17 @@ async def download_from_tg(app, status_msg) -> str:
     if VIDEO_URL.startswith("tg_file:"):
         raw = VIDEO_URL.replace("tg_file:", "")
         file_id, orig_name = (raw.split("|", 1) if "|" in raw else (raw, "source.mkv"))
-        await app.download_media(
+        dl_result = await app.download_media(
             message=file_id.strip(), file_name=SOURCE_FILE,
             progress=dl_progress, progress_args=(app, CHAT_ID, status_msg, start)
         )
+        if dl_result and dl_result != SOURCE_FILE and os.path.exists(dl_result):
+            try:
+                if os.path.exists(SOURCE_FILE):
+                    os.remove(SOURCE_FILE)
+                os.rename(dl_result, SOURCE_FILE)
+            except Exception as e:
+                print(f"WARNING: Failed to rename {dl_result} to {SOURCE_FILE}: {e}")
         return orig_name
 
     if "t.me/" in VIDEO_URL:
@@ -130,10 +164,17 @@ async def download_from_tg(app, status_msg) -> str:
         msg  = await app.get_messages(target_chat, msg_id)
         media = getattr(msg, "video", None) or getattr(msg, "document", None)
         orig_name = getattr(media, "file_name", "source.mkv") if media else "source.mkv"
-        await app.download_media(
+        dl_result = await app.download_media(
             msg, file_name=SOURCE_FILE,
             progress=dl_progress, progress_args=(app, CHAT_ID, status_msg, start)
         )
+        if dl_result and dl_result != SOURCE_FILE and os.path.exists(dl_result):
+            try:
+                if os.path.exists(SOURCE_FILE):
+                    os.remove(SOURCE_FILE)
+                os.rename(dl_result, SOURCE_FILE)
+            except Exception as e:
+                print(f"WARNING: Failed to rename {dl_result} to {SOURCE_FILE}: {e}")
         return orig_name
 
     raise ValueError(f"Unsupported URL format: {VIDEO_URL}")
@@ -229,65 +270,113 @@ def capture_thumbnail(source: str) -> bool:
 # ── REMUX (apply new name + clean metadata) ───────────────────────────────────
 
 def remux(output_name: str) -> bool:
-    """
-    mkvmerge: copy all streams into a new container with the structured filename.
-    No transcoding — pure stream copy. Returns True on success.
-
-    Uses a plain temp filename (_remux_tmp.mkv) for the mkvmerge -o target to avoid
-    any shell or filesystem glob-expansion issues with brackets in the final filename,
-    then renames to the structured output name via Python.
-    """
+    """mkvmerge: copy all streams into a new container with the structured filename."""
     src = os.path.abspath(SOURCE_FILE)
     dst = os.path.abspath(output_name)
-    # Bracket-free temp name — avoids mkvmerge / shell glob-expansion on names like
-    # "[Anime] [S01-E02] Title [1080p] [Sub].mkv" which can silently corrupt on some
-    # runners.  Python's os.rename is always safe regardless of brackets.
     tmp = os.path.abspath("_remux_tmp.mkv")
 
     if not os.path.exists(src):
         raise FileNotFoundError(f"Source file missing before remux: {src}")
 
-    # Clean up any leftover tmp from a previous failed run
-    if os.path.exists(tmp):
-        os.remove(tmp)
+    if os.path.exists(tmp): os.remove(tmp)
 
-    ret = subprocess.run(
-        ["mkvmerge", "-o", tmp, src],
-        capture_output=True
-    )
-    if os.path.exists(tmp) and os.path.getsize(tmp) > 0:
-        if os.path.exists(src):
-            os.remove(src)
-        os.rename(tmp, dst)
-        return True
-    # Fallback: simple rename if mkvmerge fails (e.g. non-MKV source)
-    print(f"[remux] mkvmerge failed (rc={ret.returncode}), falling back to rename")
-    if os.path.exists(tmp):
-        os.remove(tmp)
+    try:
+        # Check if mkvmerge exists
+        if subprocess.run(["which", "mkvmerge"], stdout=subprocess.DEVNULL).returncode == 0:
+            ret = subprocess.run(["mkvmerge", "-o", tmp, src], capture_output=True)
+            if os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+                if os.path.exists(src): os.remove(src)
+                os.rename(tmp, dst)
+                return True
+            print(f"[remux] mkvmerge failed (rc={ret.returncode}), falling back to rename")
+        else:
+            print("[remux] Warning: mkvmerge not found, skipping remux.")
+    except Exception as e:
+        print(f"[remux] Error: {e}. Falling back to rename.")
+
+    if os.path.exists(tmp): os.remove(tmp)
     os.rename(src, dst)
-    return ret.returncode == 0
+    return False
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    lane         = resolve_lane()
-    session_dir  = "tg_session_dir"
-    os.makedirs(session_dir, exist_ok=True)
-    session_path = os.path.join(session_dir, f"tg_dl_session_{lane}")
+    from utils.tg_utils import _resolve_session_names
+    session_names = _resolve_session_names()
+    print(f"DEBUG: Prioritized session names to try: {session_names}")
 
-    start_total = time.time()
+    app = None
+    flood_waits = {}
+    chosen_session = None
 
-    app = Client(session_path, api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-    for attempt in range(5):
+    for session_name in session_names:
+        print(f"DEBUG: Trying session: {session_name}...")
         try:
-            await app.start(); break
-        except FloodWait as e:
-            await asyncio.sleep(e.value + 5)
-    else:
-        print("❌ Could not authenticate with Telegram after 5 attempts."); sys.exit(1)
+            candidate = Client(
+                session_name,
+                api_id=API_ID,
+                api_hash=API_HASH,
+                bot_token=BOT_TOKEN or None,
+                max_concurrent_transmissions=16
+            )
+            await candidate.start()
+            app = candidate
+            chosen_session = session_name
+            print(f"DEBUG: TG auth OK with session: {session_name}")
+            break
+        except Exception as e:
+            if "FloodWait" in type(e).__name__ or getattr(e, "value", None) is not None:
+                wait_val = getattr(e, "value", 10)
+                flood_waits[session_name] = wait_val
+                print(f"DEBUG: FloodWait {wait_val}s on '{session_name}' — trying next...")
+                continue
+            print(f"DEBUG: TG auth error on '{session_name}': {e} — trying next...")
+            continue
+
+    if app is None and flood_waits:
+        best_session = min(flood_waits, key=flood_waits.get)
+        wait_secs = flood_waits[best_session]
+        attempt = 0
+        while True:
+            attempt += 1
+            print(f"All sessions flooded. Sleeping {wait_secs}s for '{best_session}' (attempt {attempt})...")
+            await asyncio.sleep(wait_secs + 5)
+            try:
+                candidate = Client(
+                    best_session,
+                    api_id=API_ID,
+                    api_hash=API_HASH,
+                    bot_token=BOT_TOKEN or None,
+                    max_concurrent_transmissions=16
+                )
+                await candidate.start()
+                app = candidate
+                chosen_session = best_session
+                print(f"DEBUG: TG auth OK (post-flood attempt {attempt}): {best_session}")
+                break
+            except Exception as e:
+                if "FloodWait" in type(e).__name__ or getattr(e, "value", None) is not None:
+                    wait_secs = getattr(e, "value", 10)
+                    print(f"DEBUG: Another FloodWait: {wait_secs}s — retrying...")
+                    continue
+                print(f"DEBUG: TG auth failed on post-flood attempt {attempt}: {e}")
+                break
+
+    if app is None:
+        print("❌ Could not authorize with Telegram. No usable session found.")
+        sys.exit(1)
+
+    import utils.tg_utils as tg_utils
+    tg_utils._active_tg_state = {
+        "app": app,
+        "session_name": chosen_session,
+        "label": "RENAME"
+    }
 
     try:
-        status = await app.send_message(
+        from utils.tg_utils import run_with_flood_retry
+        status = await run_with_flood_retry(
+            app.send_message,
             CHAT_ID,
             "<code>┌─── 🏷️  [ RENAME.MISSION ] ──────────┐\n"
             "│                                    \n"
@@ -296,6 +385,7 @@ async def main():
             "└────────────────────────────────────┘</code>",
             parse_mode=enums.ParseMode.HTML
         )
+        tg_utils._active_tg_state["status"] = status
 
         # ── 1. DOWNLOAD ────────────────────────────────────────────────────
         await tg_edit(app, CHAT_ID, status.id,
@@ -382,16 +472,63 @@ async def main():
 
         _ui.last_up_pct = -1; _ui.last_up_update = 0; _ui.up_start_time = 0
 
-        await app.send_document(
+        # Send phase notification to private bot/chat
+        try:
+            from utils.tg_simple import notify_private
+            notify_private(f"🚀 <b>[ UPLINK STARTED ]</b>\n📄 <b>FILE:</b> <code>{output_name}</code>")
+        except Exception:
+            pass
+
+        # Use fast_upload for parallel throughput
+        from utils.tg_utils import fast_upload, run_with_flood_retry
+        video_input = await fast_upload(
+            app, output_name, 
+            progress_callback=upload_progress, 
+            progress_args=(app, CHAT_ID, status, output_name)
+        )
+
+        sent_msg = await run_with_flood_retry(
+            app.send_document,
             chat_id=CHAT_ID,
-            document=output_name,
-            file_name=output_name,
+            document=video_input,
             thumb=THUMBNAIL if has_thumb else None,
             caption=report,
             parse_mode=enums.ParseMode.HTML,
-            progress=upload_progress,
-            progress_args=(app, CHAT_ID, status, output_name),
         )
+
+        # Send full rename report to private bot/chat
+        try:
+            from utils.tg_simple import notify_private
+            notify_private(report)
+        except Exception:
+            pass
+
+        # Forward/Copy to channels if configured
+        if getattr(config, "FORWARD_CHATS", None):
+            print(f"[FORWARD] Copying message to {len(config.FORWARD_CHATS)} target channel(s)...", flush=True)
+            for target_chat in config.FORWARD_CHATS:
+                try:
+                    # Try copying first for a clean post without forward headers
+                    await run_with_flood_retry(
+                        app.copy_message,
+                        chat_id=target_chat,
+                        from_chat_id=CHAT_ID,
+                        message_id=sent_msg.id
+                    )
+                    print(f"[FORWARD] Successfully copied message to {target_chat}", flush=True)
+                except Exception as fe:
+                    print(f"[FORWARD] copy_message failed to {target_chat} ({fe}). Trying standard forward...", flush=True)
+                    try:
+                        await run_with_flood_retry(
+                            app.forward_messages,
+                            chat_id=target_chat,
+                            from_chat_id=CHAT_ID,
+                            message_ids=sent_msg.id
+                        )
+                        print(f"[FORWARD] Successfully forwarded message to {target_chat}", flush=True)
+                    except Exception as fe2:
+                        print(f"[FORWARD ERROR] Failed to forward to {target_chat}: {fe2}", flush=True)
+
 
         try: await status.delete()
         except: pass

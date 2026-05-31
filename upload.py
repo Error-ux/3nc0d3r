@@ -79,19 +79,29 @@ async def main():
 
     try:
         # 1. REMUX — copy chapters/attachments from source, stamp encoder title
-        await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>")
-        fixed_file  = f"FIXED_{config.FILE_NAME}"
-        source      = config.SOURCE if os.path.exists(config.SOURCE) else config.FILE_NAME
-        title_args  = ["--title", config.ENCODER_TITLE] if config.ENCODER_TITLE.strip() else []
-        subprocess.run(
-            ["mkvmerge", "-o", fixed_file, *title_args,
-             config.FILE_NAME,
-             "--no-video", "--no-audio", "--no-subtitles", "--no-attachments", source],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        if os.path.exists(fixed_file):
-            os.remove(config.FILE_NAME)
-            os.rename(fixed_file, config.FILE_NAME)
+        try:
+            await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>")
+            fixed_file  = f"FIXED_{config.FILE_NAME}"
+            source      = config.SOURCE if os.path.exists(config.SOURCE) else config.FILE_NAME
+            title_args  = ["--title", config.ENCODER_TITLE] if config.ENCODER_TITLE.strip() else []
+            
+            # Check if mkvmerge exists
+            if subprocess.run(["which", "mkvmerge"], stdout=subprocess.DEVNULL).returncode == 0:
+                subprocess.run(
+                    ["mkvmerge", "-o", fixed_file, *title_args,
+                     config.FILE_NAME,
+                     "--no-video", "--no-audio", "--no-subtitles", "--no-attachments", source],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    check=True
+                )
+                if os.path.exists(fixed_file):
+                    os.remove(config.FILE_NAME)
+                    os.rename(fixed_file, config.FILE_NAME)
+                    print("[upload] Remux successful.")
+            else:
+                print("[upload] Warning: mkvmerge not found, skipping remux.")
+        except Exception as e:
+            print(f"[upload] Remux failed: {e}. Proceeding with original file.")
 
         # 2. GRID + GOFILE concurrently
         final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
@@ -177,19 +187,66 @@ async def main():
         # 7. TRANSMIT
         _ui.last_up_pct = -1; _ui.last_up_update = 0; _ui.up_start_time = 0
 
+        # Send phase notification to private bot/chat
+        try:
+            from utils.tg_simple import notify_private
+            notify_private(f"🚀 <b>[ UPLINK STARTED ]</b>\n📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>")
+        except Exception:
+            pass
+
         await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>")
 
-        await app.send_document(
+        # Use fast_upload for parallel throughput
+        from utils.tg_utils import fast_upload, run_with_flood_retry
+        video_input = await fast_upload(
+            app, config.FILE_NAME, 
+            progress_callback=upload_progress, 
+            progress_args=(app, config.CHAT_ID, status, config.FILE_NAME)
+        )
+
+        sent_msg = await run_with_flood_retry(
+            app.send_document,
             chat_id=config.CHAT_ID,
-            document=config.FILE_NAME,
-            file_name=config.FILE_NAME,
+            document=video_input,
             thumb=thumb,
             caption=report,
             parse_mode=enums.ParseMode.HTML,
-            reply_markup=buttons,
-            progress=upload_progress,
-            progress_args=(app, config.CHAT_ID, status, config.FILE_NAME),
+            reply_markup=buttons
         )
+
+        # Send full upload report to private bot/chat
+        try:
+            from utils.tg_simple import notify_private
+            notify_private(report)
+        except Exception:
+            pass
+
+        # Forward/Copy to channels if configured
+        if getattr(config, "FORWARD_CHATS", None):
+            print(f"[FORWARD] Copying message to {len(config.FORWARD_CHATS)} target channel(s)...", flush=True)
+            for target_chat in config.FORWARD_CHATS:
+                try:
+                    # Try copying first for a clean post without forward headers
+                    await run_with_flood_retry(
+                        app.copy_message,
+                        chat_id=target_chat,
+                        from_chat_id=config.CHAT_ID,
+                        message_id=sent_msg.id
+                    )
+                    print(f"[FORWARD] Successfully copied message to {target_chat}", flush=True)
+                except Exception as fe:
+                    print(f"[FORWARD] copy_message failed to {target_chat} ({fe}). Trying standard forward...", flush=True)
+                    try:
+                        await run_with_flood_retry(
+                            app.forward_messages,
+                            chat_id=target_chat,
+                            from_chat_id=config.CHAT_ID,
+                            message_ids=sent_msg.id
+                        )
+                        print(f"[FORWARD] Successfully forwarded message to {target_chat}", flush=True)
+                    except Exception as fe2:
+                        print(f"[FORWARD ERROR] Failed to forward to {target_chat}: {fe2}", flush=True)
+
 
         # 8. CLEANUP
         try: await status.delete()

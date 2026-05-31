@@ -4,6 +4,8 @@ import subprocess
 import time
 import shutil
 import psutil
+import urllib.request
+import json
 from pyrogram import enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -13,6 +15,7 @@ from utils.rename import lang_code_to_name
 from utils.ui import get_encode_ui, format_time, upload_progress, get_vmaf_ui
 from utils.rename import resolve_output_name, format_track_report
 from utils.tg_utils import connect_telegram, tg_edit, tg_notify_failure
+
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +55,7 @@ async def resource_monitor(stop_event: asyncio.Event, stats: dict, interval: int
 # MAIN
 # ---------------------------------------------------------------------------
 async def main():
+
     # 1. PRE-FLIGHT DISK CHECK
     if os.path.exists(config.SOURCE):
         total, used, free = shutil.disk_usage("/")
@@ -260,6 +264,27 @@ async def main():
 
     demo_label = f" | ⚡ DEMO {demo_duration}s" if demo_mode else ""
 
+    # Send phase notification to private bot/chat with extremely rich details
+    try:
+        from utils.tg_simple import notify_private
+        hrs = int(duration // 3600)
+        mins = int((duration % 3600) // 60)
+        secs = int(duration % 60)
+        dur_txt = f"{mins}m {secs}s" if hrs == 0 else f"{hrs}h {mins}m {secs}s"
+
+        notify_private(
+            f"⚙️ <b>[ ENCODING STARTED ]</b>\n\n"
+            f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
+            f"⏱️ <b>DURATION:</b> <code>{dur_txt}</code>\n"
+            f"🛠️ <b>SPECS:</b>\n"
+            f"└ Preset: {final_preset} | CRF: {final_crf}\n"
+            f"└ Video: {res_label}{crop_label_txt} | {hdr_label}{grain_label}\n"
+            f"└ Audio: {config.AUDIO_MODE.upper()} @ {final_audio_bitrate}\n"
+            f"└ Type: {config.CONTENT_TYPE}"
+        )
+    except Exception:
+        pass
+
     # 4. LAUNCH TG AUTH AS A BACKGROUND TASK — encoding starts immediately.
     # If FloodWait fires, connect_telegram sleeps it out on its own while
     # FFmpeg keeps running. Progress messages are sent the instant TG is ready.
@@ -269,6 +294,22 @@ async def main():
         connect_telegram(tg_state, tg_ready, config.FILE_NAME)
     )
     tg_connect_start = time.time()   # record when we started waiting for TG
+
+    # Background task to clean up temporary download initiation messages from the channel
+    async def cleanup_download_message():
+        await tg_ready.wait()
+        app = tg_state.get("app")
+        if app and os.path.exists("dl_msg_id.txt"):
+            try:
+                with open("dl_msg_id.txt") as f:
+                    dl_msg_id = int(f.read().strip())
+                await app.delete_messages(config.CHAT_ID, dl_msg_id)
+                print(f"[CLEANUP] Deleted download start message {dl_msg_id}", flush=True)
+                os.remove("dl_msg_id.txt")
+            except Exception as e:
+                print(f"[CLEANUP ERROR] Failed to delete download start message: {e}", flush=True)
+
+    asyncio.create_task(cleanup_download_message())
 
     # Build action buttons once — shown on every progress edit during encoding.
     # Button 1: URL → opens GitHub Actions log directly (no callback needed).
@@ -357,6 +398,7 @@ async def main():
     start_time        = time.time()
     last_progress_pct = -1
     last_update_time  = 0
+
     last_ui_text      = None   # latest snapshot; pushed to TG when it connects mid-encode
 
     with open(config.LOG_FILE, "w") as f_log:
@@ -379,8 +421,6 @@ async def main():
 
                     milestone   = int(percent // 10) * 10
                     now         = time.time()
-                    pct_crossed = milestone > last_progress_pct
-                    time_due    = now - last_update_time >= 25
 
                     scifi_ui     = get_encode_ui(
                         config.FILE_NAME, speed, fps, elapsed, eta,
@@ -394,11 +434,15 @@ async def main():
                     )
                     last_ui_text = scifi_ui   # always keep the freshest snapshot
 
-                    if pct_crossed or time_due:
-                        last_progress_pct = milestone
-                        last_update_time  = now
-                        # Only sends if TG is already ready; otherwise silently buffered
-                        await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
+                    # Strict dynamic throttle on Telegram message edits to avoid rate-limiting
+                    mute_progress = os.getenv("TG_MUTE_PROGRESS", "false").lower() == "true"
+                    if not mute_progress:
+                        interval = int(os.getenv("TG_PROGRESS_INTERVAL", "120"))
+                        if now - last_update_time >= interval:
+                            last_progress_pct = milestone
+                            last_update_time  = now
+                            # Only sends if TG is already ready; otherwise silently buffered
+                            await tg_edit(tg_state, tg_ready, scifi_ui, reply_markup=encode_buttons)
 
                 except Exception:
                     continue
@@ -581,19 +625,74 @@ async def main():
 
         import utils.ui as _ui; _ui.last_up_pct = -1; _ui.last_up_update = 0; _ui.up_start_time = 0
 
+        # Send phase notification to private bot/chat with rich details
+        try:
+            from utils.tg_simple import notify_private
+            vmaf_info = f" | VMAF: <code>{vmaf_val}</code>" if config.RUN_VMAF else ""
+            notify_private(
+                f"🚀 <b>[ UPLINK STARTED ]</b>\n\n"
+                f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
+                f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>{vmaf_info}\n"
+                f"⏱️ <b>ENCODE TIME:</b> <code>{format_time(total_mission_time)}</code>"
+            )
+        except Exception:
+            pass
+
         await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>")
 
-        await app.send_document(
+        # Use fast_upload for parallel throughput
+        from utils.tg_utils import fast_upload, run_with_flood_retry
+        video_input = await fast_upload(
+            app, config.FILE_NAME, 
+            progress_callback=upload_progress, 
+            progress_args=(app, config.CHAT_ID, status, config.FILE_NAME)
+        )
+
+        sent_msg = await run_with_flood_retry(
+            app.send_document,
             chat_id=config.CHAT_ID,
-            document=config.FILE_NAME,
-            file_name=config.FILE_NAME,
+            document=video_input,
             thumb=thumb,
             caption=report,
             parse_mode=enums.ParseMode.HTML,
-            reply_markup=buttons,
-            progress=upload_progress,
-            progress_args=(app, config.CHAT_ID, status, config.FILE_NAME),
+            reply_markup=buttons
         )
+
+        # Send full accomplishment report to private bot/chat
+        try:
+            from utils.tg_simple import notify_private
+            notify_private(report)
+        except Exception:
+            pass
+
+        # Forward/Copy to channels if configured
+        if getattr(config, "FORWARD_CHATS", None):
+            print(f"[FORWARD] Copying message to {len(config.FORWARD_CHATS)} target channel(s)...", flush=True)
+            for target_chat in config.FORWARD_CHATS:
+                try:
+                    # Try copying first for a clean post without forward headers
+                    await run_with_flood_retry(
+                        app.copy_message,
+                        chat_id=target_chat,
+                        from_chat_id=config.CHAT_ID,
+                        message_id=sent_msg.id
+                    )
+                    print(f"[FORWARD] Successfully copied message to {target_chat}", flush=True)
+                except Exception as fe:
+                    print(f"[FORWARD] copy_message failed to {target_chat} ({fe}). Trying standard forward...", flush=True)
+                    try:
+                        await run_with_flood_retry(
+                            app.forward_messages,
+                            chat_id=target_chat,
+                            from_chat_id=config.CHAT_ID,
+                            message_ids=sent_msg.id
+                        )
+                        print(f"[FORWARD] Successfully forwarded message to {target_chat}", flush=True)
+                    except Exception as fe2:
+                        print(f"[FORWARD ERROR] Failed to forward to {target_chat}: {fe2}", flush=True)
+
+
+
 
         # CLEANUP
         try: await status.delete()
@@ -606,6 +705,9 @@ async def main():
         import traceback
         tb = traceback.format_exc()
         print(f"[FATAL] Unexpected error: {exc}\n{tb}")
+        
+
+
         elapsed_total = time.time() - start_time
         reason = (
             f"Unexpected error after {format_time(elapsed_total)}:\n"

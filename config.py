@@ -6,10 +6,71 @@ SCREENSHOT = "grid_preview.jpg"
 LOG_FILE = "encode_log.txt"
 
 # ---------- TELEGRAM CREDENTIALS ----------
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH", "")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-CHAT_ID = int(os.getenv("CHAT_ID", "0")) if os.getenv("CHAT_ID") else 0
+API_ID = int(os.getenv("API_ID", os.getenv("TG_API_ID", "0")).strip() or "0")
+API_HASH = os.getenv("API_HASH", os.getenv("TG_API_HASH", "")).strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", os.getenv("TG_BOT_TOKEN", "")).strip()
+
+# Dynamic 2-Channel Routing (Anime vs Other content types)
+_PRIMARY_CHAT = os.getenv("CHAT_ID", os.getenv("TG_CHAT_ID", "0")).strip()
+_OTHER_CHAT   = os.getenv("CHAT_ID_OTHER", os.getenv("TG_CHAT_ID_OTHER", "0")).strip()
+
+# Check Content Type (Anime vs AMV/Donghua/Hentai/HMV/custom)
+CONTENT_TYPE_VAL = os.getenv("CONTENT_TYPE", "Anime").strip()
+
+if CONTENT_TYPE_VAL.lower() != "anime" and _OTHER_CHAT != "0" and _OTHER_CHAT != "":
+    _target_chat_str = _OTHER_CHAT
+else:
+    _target_chat_str = _PRIMARY_CHAT
+
+CHAT_ID = int(_target_chat_str) if _target_chat_str else 0
+
+# Channels to forward/copy the successfully uploaded file to
+# Channels to forward/copy the successfully uploaded file to
+FORWARD_CHATS = []
+_raw_forward = os.getenv("FORWARD_CHATS", os.getenv("TG_FORWARD_CHATS", "")).strip()
+if _raw_forward:
+    for part in _raw_forward.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if part.startswith("-") or part.isdigit():
+            try:
+                FORWARD_CHATS.append(int(part))
+            except ValueError:
+                FORWARD_CHATS.append(part)
+        else:
+            FORWARD_CHATS.append(part)
+
+# Private notification chats/users (e.g. your personal ID 6253389182)
+NOTIFY_CHATS = []
+_raw_notify = os.getenv("NOTIFY_CHATS", os.getenv("TG_NOTIFY_CHATS", "6253389182")).strip()
+if _raw_notify:
+    for part in _raw_notify.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if part.startswith("-") or part.isdigit():
+            try:
+                NOTIFY_CHATS.append(int(part))
+            except ValueError:
+                NOTIFY_CHATS.append(part)
+        else:
+            NOTIFY_CHATS.append(part)
+
+
+
+# Set environment variables for all concurrent modules and subprocesses
+os.environ["CHAT_ID"] = str(CHAT_ID)
+os.environ["TG_CHAT_ID"] = str(CHAT_ID)
+
+# Dynamic Telegram Progress Update Throttling (defaulting to 15 seconds to prevent FloodWait)
+TG_PROGRESS_INTERVAL = int(os.getenv("TG_PROGRESS_INTERVAL", "15").strip() or "15")
+os.environ["TG_PROGRESS_INTERVAL"] = str(TG_PROGRESS_INTERVAL)
+
+# Mute intermediate Telegram progress edits (set to True to use Web Dashboard exclusively for live tracking)
+TG_MUTE_PROGRESS = os.getenv("TG_MUTE_PROGRESS", "false").lower() == "true"
+os.environ["TG_MUTE_PROGRESS"] = str(TG_MUTE_PROGRESS).lower()
+
 FILE_NAME = os.getenv("FILE_NAME", "output.mkv")
 SESSION_NAME = os.getenv("SESSION_NAME", "enc_session")
 

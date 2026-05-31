@@ -16,9 +16,10 @@ Exports:
 import json
 import os
 import subprocess
+import config
 
-BOT_TOKEN  = os.environ.get("TG_BOT_TOKEN",       "").strip()
-CHAT_ID    = os.environ.get("TG_CHAT_ID",          "").strip()
+BOT_TOKEN  = config.BOT_TOKEN
+CHAT_ID    = str(config.CHAT_ID)
 RUN_NUMBER = os.environ.get("GITHUB_RUN_NUMBER",  "?")
 
 
@@ -65,3 +66,33 @@ def tg_edit(msg_id: int | None, text: str) -> None:
         "text":       text,
         "parse_mode": "HTML",
     })
+
+
+def notify_private(text: str):
+    """Sends a notification to the private/notify chats configured in config.NOTIFY_CHATS."""
+    import config
+    if not config.BOT_TOKEN or not getattr(config, "NOTIFY_CHATS", None):
+        return
+    for chat in config.NOTIFY_CHATS:
+        try:
+            import json
+            import subprocess
+            payload = json.dumps({
+                "chat_id": chat,
+                "text": text,
+                "parse_mode": "HTML"
+            })
+            subprocess.run(
+                [
+                    "curl", "-s", "-X", "POST",
+                    f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage",
+                    "-H", "Content-Type: application/json",
+                    "-d", payload,
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+

@@ -16,9 +16,10 @@ Exports:
 import json
 import os
 import subprocess
+import config
 
-BOT_TOKEN  = os.environ.get("TG_BOT_TOKEN",       "").strip()
-CHAT_ID    = os.environ.get("TG_CHAT_ID",          "").strip()
+BOT_TOKEN  = config.BOT_TOKEN
+CHAT_ID    = str(config.CHAT_ID)
 RUN_NUMBER = os.environ.get("GITHUB_RUN_NUMBER",  "?")
 
 

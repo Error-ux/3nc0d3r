@@ -212,6 +212,7 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           TG_CHAT_ID_OTHER: ${{ secrets.TG_CHAT_ID_OTHER }}
+          CONTENT_TYPE: ${{ github.event.inputs.content_type }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
           CUSTOM: ${{ github.event.inputs.custom_name }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}

@@ -6,9 +6,9 @@ SCREENSHOT = "grid_preview.jpg"
 LOG_FILE = "encode_log.txt"
 
 # ---------- TELEGRAM CREDENTIALS ----------
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH", "")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+API_ID = int(os.getenv("API_ID", os.getenv("TG_API_ID", "0")).strip() or "0")
+API_HASH = os.getenv("API_HASH", os.getenv("TG_API_HASH", "")).strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", os.getenv("TG_BOT_TOKEN", "")).strip()
 
 # Dynamic 2-Channel Routing (Anime vs Other content types)
 _PRIMARY_CHAT = os.getenv("CHAT_ID", os.getenv("TG_CHAT_ID", "0")).strip()

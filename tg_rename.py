@@ -41,10 +41,12 @@ import utils.ui as _ui
 
 # ── ENV ───────────────────────────────────────────────────────────────────────
 
-API_ID       = int(os.getenv("TG_API_ID",   "0").strip())
-API_HASH     = os.getenv("TG_API_HASH",     "").strip()
-BOT_TOKEN    = os.getenv("TG_BOT_TOKEN",    "").strip()
-CHAT_ID      = int(os.getenv("TG_CHAT_ID",  "0").strip())
+import config
+
+API_ID       = config.API_ID
+API_HASH     = config.API_HASH
+BOT_TOKEN    = config.BOT_TOKEN
+CHAT_ID      = config.CHAT_ID
 VIDEO_URL    = os.getenv("VIDEO_URL",        "").strip()
 
 ANIME_NAME   = os.getenv("ANIME_NAME",      "").strip()

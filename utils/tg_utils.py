@@ -90,13 +90,19 @@ async def fast_upload(client: Client, file_path: str, progress_callback=None, pr
 
 
 # ---------------------------------------------------------------------------
-# LANE RESOLUTION
+# LANE RESOLUTION (unlimited unique lanes: A, B, ..., Z, AA, AB, ...)
 # ---------------------------------------------------------------------------
-ALL_LANES = [chr(ord("A") + i) for i in range(20)]  # ["A", "B", ..., "T"]
-
-
 def _resolve_lane(run_number: int) -> str:
-    return ALL_LANES[run_number % 20]
+    """Convert run number to unique alphabetic lane: 1→A, 26→Z, 27→AA, 28→AB, ..."""
+    if run_number <= 0:
+        return "A"
+    result = ""
+    n = run_number
+    while n > 0:
+        n -= 1
+        result = chr(ord('A') + (n % 26)) + result
+        n //= 26
+    return result
 
 
 def _resolve_session_names() -> list[str]:
@@ -256,28 +262,39 @@ async def tg_edit(tg_state: dict, tg_ready: asyncio.Event, text: str, reply_mark
 
 
 # ---------------------------------------------------------------------------
-# Telegram Session Lane Rotator
+# Telegram Session Lane Rotator (scans existing cached sessions on disk)
 # ---------------------------------------------------------------------------
 async def rotate_session_lane(tg_state: dict) -> bool:
     """
-    Rotates the active Pyrogram client connection to a NEW dynamic session lane database
-    under the SAME primary bot token. Appends an incrementing swap suffix to ensure there
-    is an infinite supply of fresh session databases, preventing database locks and rate limits.
+    On FloodWait, scans tg_session_dir/ for existing cached .session files from
+    previous runs and tries connecting to them. Since all sessions use the same
+    bot token, the rotated client retains full ownership of existing messages.
     """
     current_name = tg_state.get("session_name")
     if not current_name:
         print("[SESSION ROTATE ERROR] No active session_name in tg_state.")
         return False
-        
-    import re
-    # Strip any existing swap suffix (e.g. _swap2) to resolve back to the base lane name
-    base_name = re.sub(r"_swap\d+$", "", current_name)
-    
-    counter = tg_state.get("rotation_counter", 0) + 1
-    tg_state["rotation_counter"] = counter
-    
-    next_session = f"{base_name}_swap{counter}"
-    print(f"[SESSION ROTATE] Swapping connection to a fresh dynamic lane: {os.path.basename(next_session)}...")
+
+    session_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tg_session_dir"))
+    tried = tg_state.get("tried_sessions", set())
+    tried.add(current_name)
+
+    # Scan disk for all existing .session files
+    candidates = []
+    if os.path.isdir(session_dir):
+        for f in sorted(os.listdir(session_dir)):
+            if f.endswith(".session"):
+                full_path = os.path.join(session_dir, f[:-8])  # strip .session
+                if full_path not in tried:
+                    candidates.append(full_path)
+
+    # Also try the bare session name as fallback
+    if config.SESSION_NAME not in tried:
+        candidates.append(config.SESSION_NAME)
+
+    if not candidates:
+        print("[SESSION ROTATE] No more existing session files to try.")
+        return False
 
     # Close old app safely
     old_app = tg_state.get("app")
@@ -287,29 +304,31 @@ async def rotate_session_lane(tg_state: dict) -> bool:
         except Exception:
             pass
 
-    # Try starting the next session candidate
-    new_app = None
-    try:
-        candidate = Client(
-            next_session,
-            api_id=config.API_ID,
-            api_hash=config.API_HASH,
-            bot_token=config.BOT_TOKEN,
-            max_concurrent_transmissions=16
-        )
-        await candidate.start()
-        new_app = candidate
-        print(f"[SESSION ROTATE] Successfully connected to dynamic lane session: {next_session}")
-    except Exception as e:
-        print(f"[SESSION ROTATE ERROR] Failed to connect to dynamic lane {next_session}: {e}")
-        return False
+    # Try each candidate until one connects
+    for next_session in candidates:
+        tried.add(next_session)
+        tg_state["tried_sessions"] = tried
+        print(f"[SESSION ROTATE] Trying existing session: {os.path.basename(next_session)}...")
 
-    # Update tg_state
-    tg_state["app"] = new_app
-    tg_state["session_name"] = next_session
+        try:
+            candidate = Client(
+                next_session,
+                api_id=config.API_ID,
+                api_hash=config.API_HASH,
+                bot_token=config.BOT_TOKEN,
+                max_concurrent_transmissions=16
+            )
+            await candidate.start()
+            tg_state["app"] = candidate
+            tg_state["session_name"] = next_session
+            print(f"✅ [SESSION ROTATE] Swapped to existing session: {os.path.basename(next_session)}")
+            return True
+        except Exception as e:
+            print(f"[SESSION ROTATE] Failed on {os.path.basename(next_session)}: {e}")
+            continue
 
-    print(f"✅ [SESSION ROTATE] Swapped active lane to: {os.path.basename(next_session)}.")
-    return True
+    print("[SESSION ROTATE] All existing sessions exhausted.")
+    return False
 
 
 # ---------------------------------------------------------------------------

@@ -173,17 +173,27 @@ jobs:
       - name: 🔀 Resolve Lane
         id: lane
         run: |
-          LANES=(A B C D E F G H I J K L M N O P Q R S T)
-          IDX=$(( ${{ github.run_number }} % 20 ))
-          LANE="${LANES[$IDX]}"
+          # Base-26 conversion: run 1→A, 26→Z, 27→AA, 28→AB, ...
+          num=${{ github.run_number }}
+          LANE=""
+          n=$num
+          while [ $n -gt 0 ]; do
+            n=$((n - 1))
+            r=$((n % 26))
+            c=$(printf "\\$(printf '%03o' $((65 + r)))")
+            LANE="${c}${LANE}"
+            n=$((n / 26))
+          done
+          [ -z "$LANE" ] && LANE="A"
           echo "name=lane-${LANE}" >> $GITHUB_OUTPUT
-          echo "Lane: lane-${LANE}"
+          echo "Lane: lane-${LANE} (run #${{ github.run_number }})"
 
       - name: 💾 Restore Session Cache
         uses: actions/cache@v4
         with:
           path: tg_session_dir
           key: tg-session-${{ steps.lane.outputs.name }}
+          restore-keys: tg-session-
 
       - name: 🔑 Authorize Bot Session
         run: |

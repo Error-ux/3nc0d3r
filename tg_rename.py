@@ -76,11 +76,18 @@ THUMB_AT     = 0.20
 
 # ── LANE RESOLUTION ───────────────────────────────────────────────────────────
 
-_ALL_LANES = [chr(ord("A") + i) for i in range(20)]  # A–T
-
 def resolve_lane() -> str:
+    """Convert run number to unique alphabetic lane: 1→A, 26→Z, 27→AA, 28→AB, ..."""
     run_number = int(os.getenv("GITHUB_RUN_NUMBER", "0"))
-    return _ALL_LANES[run_number % 20]
+    if run_number <= 0:
+        return "A"
+    result = ""
+    n = run_number
+    while n > 0:
+        n -= 1
+        result = chr(ord('A') + (n % 26)) + result
+        n //= 26
+    return result
 
 # ── TELEGRAM HELPERS ──────────────────────────────────────────────────────────
 

@@ -1,0 +1,7 @@
+pyrogram
+tgcrypto
+yt-dlp
+psutil
+anitopy
+aiohttp
+curl_cffi

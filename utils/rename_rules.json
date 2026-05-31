@@ -1,0 +1,19 @@
+{
+  "rules": [
+    {
+      "name": "PREFIX",
+      "pattern": "^\\[S(?P<season>\\d{1,2})[-–](?P<type>SP|E)(?P<episode>\\d{1,3})\\]",
+      "description": "Matches our own prefix [S01-E01]"
+    },
+    {
+      "name": "SXXEXX_BODY",
+      "pattern": "S(?P<season>\\d{1,2})E(?P<episode>\\d{1,3})",
+      "description": "Finds S01E01 anywhere in the filename"
+    },
+    {
+      "name": "SP_BODY",
+      "pattern": "[- ._]SP(?P<episode>\\d{1,3})",
+      "description": "Finds SP03 anywhere in the filename"
+    }
+  ]
+}

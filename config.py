@@ -63,8 +63,8 @@ if _raw_notify:
 os.environ["CHAT_ID"] = str(CHAT_ID)
 os.environ["TG_CHAT_ID"] = str(CHAT_ID)
 
-# Dynamic Telegram Progress Update Throttling (defaulting to 120 seconds to prevent FloodWait)
-TG_PROGRESS_INTERVAL = int(os.getenv("TG_PROGRESS_INTERVAL", "120").strip() or "120")
+# Dynamic Telegram Progress Update Throttling (defaulting to 15 seconds to prevent FloodWait)
+TG_PROGRESS_INTERVAL = int(os.getenv("TG_PROGRESS_INTERVAL", "15").strip() or "15")
 os.environ["TG_PROGRESS_INTERVAL"] = str(TG_PROGRESS_INTERVAL)
 
 # Mute intermediate Telegram progress edits (set to True to use Web Dashboard exclusively for live tracking)

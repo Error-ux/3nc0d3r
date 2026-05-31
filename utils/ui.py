@@ -102,7 +102,7 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     if mute_progress:
         return
 
-    interval = int(os.getenv("TG_PROGRESS_INTERVAL", "120"))
+    interval = int(os.getenv("TG_PROGRESS_INTERVAL", "15"))
     if now - last_up_update < interval:
         return
 

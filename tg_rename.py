@@ -89,11 +89,21 @@ async def tg_edit(app, chat_id, msg_id, text, reply_markup=None):
         kwargs = dict(parse_mode=enums.ParseMode.HTML)
         if reply_markup:
             kwargs["reply_markup"] = reply_markup
+            
+        import utils.tg_utils as tg_utils
+        if tg_utils._active_tg_state and tg_utils._active_tg_state.get("app") is not app:
+            app = tg_utils._active_tg_state["app"]
+            status = tg_utils._active_tg_state.get("status")
+            if status:
+                msg_id = status.id
+                
         await app.edit_message_text(chat_id, msg_id, text, **kwargs)
-    except FloodWait as e:
-        await asyncio.sleep(e.value + 1)
-    except Exception:
-        pass
+    except Exception as e:
+        if "FloodWait" in type(e).__name__ or getattr(e, "value", None) is not None:
+            wait_val = getattr(e, "value", 10)
+            await asyncio.sleep(wait_val + 1)
+        else:
+            pass
 
 async def dl_progress(current, total, app, chat_id, status_msg, start_time):
     if total <= 0: return
@@ -104,7 +114,7 @@ async def dl_progress(current, total, app, chat_id, status_msg, start_time):
         return
 
     if not hasattr(dl_progress, "last_update"): dl_progress.last_update = 0
-    interval = int(os.getenv("TG_PROGRESS_INTERVAL", "120"))
+    interval = int(os.getenv("TG_PROGRESS_INTERVAL", "15"))
     if now - dl_progress.last_update < interval and current != total:
         return
     dl_progress.last_update = now
@@ -290,6 +300,7 @@ async def main():
 
     app = None
     flood_waits = {}
+    chosen_session = None
 
     for session_name in session_names:
         print(f"DEBUG: Trying session: {session_name}...")
@@ -303,13 +314,15 @@ async def main():
             )
             await candidate.start()
             app = candidate
+            chosen_session = session_name
             print(f"DEBUG: TG auth OK with session: {session_name}")
             break
-        except FloodWait as e:
-            flood_waits[session_name] = e.value
-            print(f"DEBUG: FloodWait {e.value}s on '{session_name}' — trying next...")
-            continue
         except Exception as e:
+            if "FloodWait" in type(e).__name__ or getattr(e, "value", None) is not None:
+                wait_val = getattr(e, "value", 10)
+                flood_waits[session_name] = wait_val
+                print(f"DEBUG: FloodWait {wait_val}s on '{session_name}' — trying next...")
+                continue
             print(f"DEBUG: TG auth error on '{session_name}': {e} — trying next...")
             continue
 
@@ -331,13 +344,14 @@ async def main():
                 )
                 await candidate.start()
                 app = candidate
+                chosen_session = best_session
                 print(f"DEBUG: TG auth OK (post-flood attempt {attempt}): {best_session}")
                 break
-            except FloodWait as e:
-                wait_secs = e.value
-                print(f"DEBUG: Another FloodWait: {wait_secs}s — retrying...")
-                continue
             except Exception as e:
+                if "FloodWait" in type(e).__name__ or getattr(e, "value", None) is not None:
+                    wait_secs = getattr(e, "value", 10)
+                    print(f"DEBUG: Another FloodWait: {wait_secs}s — retrying...")
+                    continue
                 print(f"DEBUG: TG auth failed on post-flood attempt {attempt}: {e}")
                 break
 
@@ -345,8 +359,17 @@ async def main():
         print("❌ Could not authorize with Telegram. No usable session found.")
         sys.exit(1)
 
+    import utils.tg_utils as tg_utils
+    tg_utils._active_tg_state = {
+        "app": app,
+        "session_name": chosen_session,
+        "label": "RENAME"
+    }
+
     try:
-        status = await app.send_message(
+        from utils.tg_utils import run_with_flood_retry
+        status = await run_with_flood_retry(
+            app.send_message,
             CHAT_ID,
             "<code>┌─── 🏷️  [ RENAME.MISSION ] ──────────┐\n"
             "│                                    \n"
@@ -355,6 +378,7 @@ async def main():
             "└────────────────────────────────────┘</code>",
             parse_mode=enums.ParseMode.HTML
         )
+        tg_utils._active_tg_state["status"] = status
 
         # ── 1. DOWNLOAD ────────────────────────────────────────────────────
         await tg_edit(app, CHAT_ID, status.id,

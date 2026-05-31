@@ -2,8 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>3nc0d3r // NEOFLOW TERMINAL CONSOLE</title>
+    <!-- Telegram Mini App SDK -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1403,6 +1405,17 @@
             updateSliderVal('grain');
             toggleCustomResolution();
             toggleAudioBitrate();
+
+            // Initialize Telegram Mini App SDK
+            if (window.Telegram && window.Telegram.WebApp) {
+                try {
+                    const webApp = window.Telegram.WebApp;
+                    webApp.ready();
+                    webApp.expand();
+                } catch (e) {
+                    console.error("Telegram WebApp initialization error:", e);
+                }
+            }
         });
     </script>
 </body>

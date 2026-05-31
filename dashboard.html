@@ -731,6 +731,15 @@
     <div id="toast-container" class="toast-container"></div>
 
     <script>
+        // Build-time injected credentials.
+        // If these placeholders are replaced by GitHub Actions/Vercel during deploy,
+        // the page will connect automatically without prompting.
+        const INJECTED_GH_TOKEN = "{{INJECTED_GH_TOKEN}}";
+        const INJECTED_GH_OWNER = "{{INJECTED_GH_OWNER}}";
+        const INJECTED_GH_REPO = "{{INJECTED_GH_REPO}}";
+        const INJECTED_REDIS_URL = "{{INJECTED_REDIS_URL}}";
+        const INJECTED_REDIS_TOKEN = "{{INJECTED_REDIS_TOKEN}}";
+
         let pollInterval = null;
 
         // Custom resolution block toggle
@@ -816,6 +825,13 @@
             let repo = localStorage.getItem('3nc0d3r_gh_repo') || '3nc0d3r';
             let redisUrl = localStorage.getItem('3nc0d3r_redis_url') || '';
             let redisToken = localStorage.getItem('3nc0d3r_redis_token') || '';
+
+            // Fallback to build-time injected credentials if local storage is empty
+            if (typeof INJECTED_GH_TOKEN !== 'undefined' && INJECTED_GH_TOKEN && !INJECTED_GH_TOKEN.startsWith('{{') && !pat) pat = INJECTED_GH_TOKEN;
+            if (typeof INJECTED_GH_OWNER !== 'undefined' && INJECTED_GH_OWNER && !INJECTED_GH_OWNER.startsWith('{{') && !owner) owner = INJECTED_GH_OWNER;
+            if (typeof INJECTED_GH_REPO !== 'undefined' && INJECTED_GH_REPO && !INJECTED_GH_REPO.startsWith('{{') && repo === '3nc0d3r') repo = INJECTED_GH_REPO;
+            if (typeof INJECTED_REDIS_URL !== 'undefined' && INJECTED_REDIS_URL && !INJECTED_REDIS_URL.startsWith('{{') && !redisUrl) redisUrl = INJECTED_REDIS_URL;
+            if (typeof INJECTED_REDIS_TOKEN !== 'undefined' && INJECTED_REDIS_TOKEN && !INJECTED_REDIS_TOKEN.startsWith('{{') && !redisToken) redisToken = INJECTED_REDIS_TOKEN;
 
             // Attempt to load from the server config.json (hassle-free auto configuration!)
             try {
@@ -986,8 +1002,17 @@
 
         // Upstash Redis REST fetch helper
         async function fetchRedisKey(key) {
-            const redisUrl = localStorage.getItem('3nc0d3r_redis_url');
-            const redisToken = localStorage.getItem('3nc0d3r_redis_token');
+            let redisUrl = localStorage.getItem('3nc0d3r_redis_url');
+            let redisToken = localStorage.getItem('3nc0d3r_redis_token');
+
+            // Fallback to build-time injected credentials if local storage is empty
+            if (typeof INJECTED_REDIS_URL !== 'undefined' && INJECTED_REDIS_URL && !INJECTED_REDIS_URL.startsWith('{{') && !redisUrl) {
+                redisUrl = INJECTED_REDIS_URL;
+            }
+            if (typeof INJECTED_REDIS_TOKEN !== 'undefined' && INJECTED_REDIS_TOKEN && !INJECTED_REDIS_TOKEN.startsWith('{{') && !redisToken) {
+                redisToken = INJECTED_REDIS_TOKEN;
+            }
+
             if (!redisUrl || !redisToken) return null;
 
             try {

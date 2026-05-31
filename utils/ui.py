@@ -35,13 +35,20 @@ def get_vmaf_ui(percent, speed, eta):
 def get_failure_ui(file_name, error_snippet, phase="ENCODE"):
     phase_icons = {"DOWNLOAD": "📥", "ENCODE": "⚙️", "UPLOAD": "☁️"}
     icon = phase_icons.get(phase.upper(), "❌")
+    # Truncate cleanly at last newline within 200 chars to avoid mid-word cuts
+    snippet = error_snippet[:200]
+    if len(error_snippet) > 200:
+        last_nl = snippet.rfind("\n")
+        if last_nl > 100:
+            snippet = snippet[:last_nl]
+        snippet = snippet.rstrip() + "…"
     return (
         f"<code>┌─── ⚠️ [ MISSION.CRITICAL.FAILURE ] ───┐\n"
         f"│                                    \n"
         f"│ 📂 FILE: {file_name}\n"
         f"│ {icon} PHASE: {phase.upper()} FAILED\n"
         f"│ ❌ ERROR DETECTED:\n"
-        f"│ {error_snippet[:200]}\n"
+        f"│ {snippet}\n"
         f"│                                    \n"
         f"│ 🛠️ STATUS: Core dumped. \n"
         f"│ 📑 Check the attached log for details.\n"

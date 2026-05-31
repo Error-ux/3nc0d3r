@@ -288,6 +288,7 @@ async def main():
     # 4. LAUNCH TG AUTH AS A BACKGROUND TASK — encoding starts immediately.
     # If FloodWait fires, connect_telegram sleeps it out on its own while
     # FFmpeg keeps running. Progress messages are sent the instant TG is ready.
+    start_time = time.time()   # init early so except block never hits UnboundLocalError
     tg_state = {}
     tg_ready = asyncio.Event()
     tg_task  = asyncio.create_task(

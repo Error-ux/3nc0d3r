@@ -68,7 +68,9 @@ def get_crop_params(duration):
             res          = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             found_at_ts  = [line.split("crop=")[1].split(" ")[0] for line in res.stderr.split('\n') if "crop=" in line]
             if found_at_ts: detected_crops.append(Counter(found_at_ts).most_common(1)[0][0])
-        except: continue
+        except Exception as e:
+            print(f"[crop] Sample at {time_str} failed: {e}")
+            continue
     if not detected_crops: return None
     most_common_crop, count = Counter(detected_crops).most_common(1)[0]
     if count >= 4:
@@ -92,7 +94,8 @@ async def get_vmaf(output_file, crop_val, width, height, duration, fps, kv_write
         try:
             parts        = crop_val.split(':')
             ref_w, ref_h = parts[0], parts[1]
-        except: pass
+        except Exception as e:
+            print(f"[vmaf] Failed to parse crop_val: {e}")
 
     interval       = duration / 6
     select_parts   = [
@@ -160,7 +163,8 @@ async def get_vmaf(output_file, crop_val, width, height, duration, fps, kv_write
                                 "ts":           int(now),
                             })
                             last_write = now
-                    except: pass
+                    except Exception as e:
+                        print(f"[vmaf] Progress update failed: {e}")
 
         async def read_stderr():
             nonlocal vmaf_score, ssim_score
@@ -183,7 +187,8 @@ async def get_vmaf(output_file, crop_val, width, height, duration, fps, kv_write
         await proc.wait()
         return vmaf_score, ssim_score
 
-    except:
+    except Exception as e:
+        print(f"[vmaf] VMAF analysis failed: {e}")
         return "N/A", "N/A"
 
 

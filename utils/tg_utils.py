@@ -36,52 +36,77 @@ Client.save_file = patched_save_file
 async def fast_upload(client: Client, file_path: str, progress_callback=None, progress_args=None):
     """
     Uploads a file in parallel chunks for maximum speed.
+    - Semaphore capped at 4 to avoid hammering TG and triggering FloodWait.
+    - Tasks are created lazily in batches instead of all at once (saves memory on large files).
+    - Each chunk retries up to 3 times on transient errors before raising.
     Returns an InputFile object ready for send_document.
     """
-    file_size = os.path.getsize(file_path)
-    file_name = os.path.basename(file_path)
-    chunk_size = 512 * 1024
+    file_size   = os.path.getsize(file_path)
+    file_name   = os.path.basename(file_path)
+    chunk_size  = 512 * 1024
     total_parts = math.ceil(file_size / chunk_size)
-    is_big = file_size > 10 * 1024 * 1024
-    
-    # Generate a random 8-byte file ID
-    file_id = int.from_bytes(os.urandom(8), "little", signed=True)
-    
-    semaphore = asyncio.Semaphore(16)
-    uploaded_parts = 0
-    
-    async def upload_worker(part_index, offset):
-        nonlocal uploaded_parts
-        async with semaphore:
-            with open(file_path, 'rb') as f:
-                f.seek(offset)
-                chunk = f.read(chunk_size)
-            
-            if is_big:
-                await client.invoke(
-                    raw.functions.upload.SaveBigFilePart(
-                        file_id=file_id,
-                        file_part=part_index,
-                        file_total_parts=total_parts,
-                        bytes=chunk
-                    )
-                )
-            else:
-                await client.invoke(
-                    raw.functions.upload.SaveFilePart(
-                        file_id=file_id,
-                        file_part=part_index,
-                        bytes=chunk
-                    )
-                )
-            
-            uploaded_parts += 1
-            if progress_callback:
-                # throttled UI update handled by the callback itself usually
-                await progress_callback(min(uploaded_parts * chunk_size, file_size), file_size, *progress_args)
+    is_big      = file_size > 10 * 1024 * 1024
 
-    tasks = [upload_worker(i, i * chunk_size) for i in range(total_parts)]
-    await asyncio.gather(*tasks)
+    file_id = int.from_bytes(os.urandom(8), "little", signed=True)
+
+    semaphore      = asyncio.Semaphore(4)   # was 16 — lower = less flood wait pressure
+    uploaded_parts = 0
+
+    async def upload_chunk(part_index, offset):
+        nonlocal uploaded_parts
+        last_err = None
+        for attempt in range(3):            # retry up to 3 times per chunk
+            try:
+                async with semaphore:
+                    with open(file_path, "rb") as f:
+                        f.seek(offset)
+                        chunk = f.read(chunk_size)
+
+                    if is_big:
+                        await client.invoke(
+                            raw.functions.upload.SaveBigFilePart(
+                                file_id=file_id,
+                                file_part=part_index,
+                                file_total_parts=total_parts,
+                                bytes=chunk,
+                            )
+                        )
+                    else:
+                        await client.invoke(
+                            raw.functions.upload.SaveFilePart(
+                                file_id=file_id,
+                                file_part=part_index,
+                                bytes=chunk,
+                            )
+                        )
+
+                    uploaded_parts += 1
+                    if progress_callback:
+                        await progress_callback(
+                            min(uploaded_parts * chunk_size, file_size),
+                            file_size,
+                            *progress_args,
+                        )
+                    return   # success — exit retry loop
+
+            except Exception as e:
+                last_err = e
+                wait = 2 ** attempt          # 1s, 2s, 4s backoff
+                print(f"[fast_upload] chunk {part_index} attempt {attempt+1} failed: {e} — retrying in {wait}s")
+                await asyncio.sleep(wait)
+
+        raise RuntimeError(f"chunk {part_index} failed after 3 attempts: {last_err}")
+
+    # Lazy batch creation — process in batches of 32 so we never hold
+    # thousands of asyncio tasks in memory for large files.
+    batch_size = 32
+    for batch_start in range(0, total_parts, batch_size):
+        batch_end   = min(batch_start + batch_size, total_parts)
+        batch_tasks = [
+            upload_chunk(i, i * chunk_size)
+            for i in range(batch_start, batch_end)
+        ]
+        await asyncio.gather(*batch_tasks)
 
     if is_big:
         return raw.types.InputFileBig(id=file_id, parts=total_parts, name=file_name)

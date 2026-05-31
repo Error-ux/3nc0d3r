@@ -219,6 +219,34 @@ async def tg_edit(tg_state: dict, tg_ready: asyncio.Event, text: str, reply_mark
 
 
 # ---------------------------------------------------------------------------
+# FLOODWAIT RETRY PROTECTION HELPER
+# ---------------------------------------------------------------------------
+async def run_with_flood_retry(func, *args, **kwargs):
+    """
+    Executes a Pyrogram method with automatic FloodWait retry protection.
+    Prevents execution termination by waiting out rate limits indefinitely,
+    ensuring critical uploads and notifications are always delivered.
+    """
+    retries = 0
+    while True:
+        try:
+            return await func(*args, **kwargs)
+        except FloodWait as e:
+            wait_time = e.value + 3
+            print(f"[FLOODWAIT] Telegram rate limit hit. Sleeping for {wait_time}s before retrying...", flush=True)
+            await asyncio.sleep(wait_time)
+        except Exception as e:
+            err_str = str(e).lower()
+            if any(term in err_str for term in ["connection", "timeout", "network", "reset", "broken pipe"]):
+                retries += 1
+                wait_time = min(5 * retries, 60)
+                print(f"[RETRY] Network/transient error: {e}. Retrying in {wait_time}s...", flush=True)
+                await asyncio.sleep(wait_time)
+            else:
+                raise e
+
+
+# ---------------------------------------------------------------------------
 # FAILURE NOTIFIER
 # ---------------------------------------------------------------------------
 async def tg_notify_failure(tg_state: dict, tg_ready: asyncio.Event,
@@ -229,7 +257,8 @@ async def tg_notify_failure(tg_state: dict, tg_ready: asyncio.Event,
         print(f"[TG-FAIL] TG unavailable — reason: {reason}")
         return
     try:
-        await app.edit_message_text(
+        await run_with_flood_retry(
+            app.edit_message_text,
             config.CHAT_ID, status.id,
             get_failure_ui(file_name, reason),
             parse_mode=enums.ParseMode.HTML,
@@ -238,7 +267,8 @@ async def tg_notify_failure(tg_state: dict, tg_ready: asyncio.Event,
         print(f"[TG-FAIL] Could not edit status message: {e}")
     if config.LOG_FILE and os.path.exists(config.LOG_FILE):
         try:
-            await app.send_document(
+            await run_with_flood_retry(
+                app.send_document,
                 config.CHAT_ID, config.LOG_FILE,
                 caption="<b>FULL MISSION LOG</b>",
                 parse_mode=enums.ParseMode.HTML,

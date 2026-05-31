@@ -197,14 +197,15 @@ async def main():
         await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>")
 
         # Use fast_upload for parallel throughput
-        from utils.tg_utils import fast_upload
+        from utils.tg_utils import fast_upload, run_with_flood_retry
         video_input = await fast_upload(
             app, config.FILE_NAME, 
             progress_callback=upload_progress, 
             progress_args=(app, config.CHAT_ID, status, config.FILE_NAME)
         )
 
-        sent_msg = await app.send_document(
+        sent_msg = await run_with_flood_retry(
+            app.send_document,
             chat_id=config.CHAT_ID,
             document=video_input,
             thumb=thumb,
@@ -226,7 +227,8 @@ async def main():
             for target_chat in config.FORWARD_CHATS:
                 try:
                     # Try copying first for a clean post without forward headers
-                    await app.copy_message(
+                    await run_with_flood_retry(
+                        app.copy_message,
                         chat_id=target_chat,
                         from_chat_id=config.CHAT_ID,
                         message_id=sent_msg.id
@@ -235,7 +237,8 @@ async def main():
                 except Exception as fe:
                     print(f"[FORWARD] copy_message failed to {target_chat} ({fe}). Trying standard forward...", flush=True)
                     try:
-                        await app.forward_messages(
+                        await run_with_flood_retry(
+                            app.forward_messages,
                             chat_id=target_chat,
                             from_chat_id=config.CHAT_ID,
                             message_ids=sent_msg.id

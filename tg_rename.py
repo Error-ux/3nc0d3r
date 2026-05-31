@@ -456,14 +456,10 @@ async def main():
             parse_mode=enums.ParseMode.HTML,
         )
 
-        # Send phase notification to private bot/chat
+        # Send full rename report to private bot/chat
         try:
             from utils.tg_simple import notify_private
-            notify_private(
-                f"✅ <b>[ RENAME COMPLETED ]</b>\n"
-                f"📄 <b>FILE:</b> <code>{output_name}</code>\n"
-                f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>"
-            )
+            notify_private(report)
         except Exception:
             pass
 

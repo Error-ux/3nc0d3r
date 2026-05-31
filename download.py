@@ -126,6 +126,16 @@ def detect_referer(url):
     return None, None
 
 
+def get_source_size_mb():
+    try:
+        import os
+        if os.path.exists("source.mkv"):
+            return os.path.getsize("source.mkv") / 1_048_576
+    except Exception:
+        pass
+    return 0.0
+
+
 def notify_download_start(method, output_name):
     """Send a Telegram message announcing the download has started."""
     if not BOT_TOKEN or not CHAT_ID:
@@ -165,11 +175,13 @@ def notify_download_start(method, output_name):
     # Send phase notification to private bot/chat
     try:
         from utils.tg_simple import notify_private
+        truncated_url = URL[:80] + '...' if len(URL) > 80 else URL
         notify_private(
-            f"📥 <b>[ DOWNLOAD STARTED ]</b>\n"
+            f"📥 <b>[ DOWNLOAD STARTED ]</b>\n\n"
             f"📄 <b>FILE:</b> <code>{output_name}</code>\n"
             f"⚙️ <b>VIA:</b> <code>{method}</code>\n"
-            f"🔢 <b>RUN:</b> <code>#{RUN_NUMBER}</code>"
+            f"🔢 <b>RUN:</b> <code>#{RUN_NUMBER}</code>\n"
+            f"🔗 <b>SOURCE:</b> <code>{truncated_url}</code>"
         )
     except Exception:
         pass
@@ -215,7 +227,13 @@ def download_hls_or_platform():
         run(cmd, label="aria2c")
         try:
             from utils.tg_simple import notify_private
-            notify_private(f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n📄 <b>FILE:</b> <code>{output_name}</code>")
+            size_mb = get_source_size_mb()
+            notify_private(
+                f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n\n"
+                f"📄 <b>FILE:</b> <code>{output_name}</code>\n"
+                f"📦 <b>SIZE:</b> <code>{size_mb:.2f} MB</code>\n"
+                f"⚡ <b>STATUS:</b> Ready for Encoding."
+            )
         except Exception:
             pass
         return
@@ -244,7 +262,13 @@ def download_hls_or_platform():
     run(cmd, label="yt-dlp")
     try:
         from utils.tg_simple import notify_private
-        notify_private(f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n📄 <b>FILE:</b> <code>{output_name}</code>")
+        size_mb = get_source_size_mb()
+        notify_private(
+            f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n\n"
+            f"📄 <b>FILE:</b> <code>{output_name}</code>\n"
+            f"📦 <b>SIZE:</b> <code>{size_mb:.2f} MB</code>\n"
+            f"⚡ <b>STATUS:</b> Ready for Encoding."
+        )
     except Exception:
         pass
 
@@ -288,7 +312,13 @@ def download_direct():
     run(cmd, label="aria2c")
     try:
         from utils.tg_simple import notify_private
-        notify_private(f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n📄 <b>FILE:</b> <code>{output_name}</code>")
+        size_mb = get_source_size_mb()
+        notify_private(
+            f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n\n"
+            f"📄 <b>FILE:</b> <code>{output_name}</code>\n"
+            f"📦 <b>SIZE:</b> <code>{size_mb:.2f} MB</code>\n"
+            f"⚡ <b>STATUS:</b> Ready for Encoding."
+        )
     except Exception:
         pass
 

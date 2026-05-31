@@ -213,14 +213,10 @@ async def main():
             reply_markup=buttons
         )
 
-        # Send phase notification to private bot/chat
+        # Send full upload report to private bot/chat
         try:
             from utils.tg_simple import notify_private
-            notify_private(
-                f"✅ <b>[ UPLOAD COMPLETED ]</b>\n"
-                f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
-                f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>"
-            )
+            notify_private(report)
         except Exception:
             pass
 

@@ -198,17 +198,6 @@ async def main():
     res_label = config.USER_RES if (config.USER_RES and config.USER_RES.strip()) else None
     crop_val  = get_crop_params(duration)
 
-    # Send phase notification to private bot/chat
-    try:
-        from utils.tg_simple import notify_private
-        notify_private(
-            f"⚙️ <b>[ ENCODING STARTED ]</b>\n"
-            f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
-            f"🛠️ <b>CRF:</b> <code>{final_crf}</code> | <b>Preset:</b> <code>{final_preset}</code>"
-        )
-    except Exception:
-        pass
-
     # -- VIDEO FILTERS --
     # Correct filter order: crop → scale → tonemap (HDR only) → hqdn3d.
     # Crop removes unwanted pixels first, scale resizes only what's kept,
@@ -309,6 +298,27 @@ async def main():
         print(f"[DEMO MODE] Encoding {demo_duration_sec:.0f}s from {demo_start_sec:.0f}s")
 
     demo_label = f" | ⚡ DEMO {demo_duration}s" if demo_mode else ""
+
+    # Send phase notification to private bot/chat with extremely rich details
+    try:
+        from utils.tg_simple import notify_private
+        hrs = int(duration // 3600)
+        mins = int((duration % 3600) // 60)
+        secs = int(duration % 60)
+        dur_txt = f"{mins}m {secs}s" if hrs == 0 else f"{hrs}h {mins}m {secs}s"
+
+        notify_private(
+            f"⚙️ <b>[ ENCODING STARTED ]</b>\n\n"
+            f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
+            f"⏱️ <b>DURATION:</b> <code>{dur_txt}</code>\n"
+            f"🛠️ <b>SPECS:</b>\n"
+            f"└ Preset: {final_preset} | CRF: {final_crf}\n"
+            f"└ Video: {res_label}{crop_label_txt} | {hdr_label}{grain_label}\n"
+            f"└ Audio: {config.AUDIO_MODE.upper()} @ {final_audio_bitrate}\n"
+            f"└ Type: {config.CONTENT_TYPE}"
+        )
+    except Exception:
+        pass
 
     # 4. LAUNCH TG AUTH AS A BACKGROUND TASK — encoding starts immediately.
     # If FloodWait fires, connect_telegram sleeps it out on its own while
@@ -671,10 +681,16 @@ async def main():
 
         import utils.ui as _ui; _ui.last_up_pct = -1; _ui.last_up_update = 0; _ui.up_start_time = 0
 
-        # Send phase notification to private bot/chat
+        # Send phase notification to private bot/chat with rich details
         try:
             from utils.tg_simple import notify_private
-            notify_private(f"🚀 <b>[ UPLINK STARTED ]</b>\n📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>")
+            vmaf_info = f" | VMAF: <code>{vmaf_val}</code>" if config.RUN_VMAF else ""
+            notify_private(
+                f"🚀 <b>[ UPLINK STARTED ]</b>\n\n"
+                f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
+                f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>{vmaf_info}\n"
+                f"⏱️ <b>ENCODE TIME:</b> <code>{format_time(total_mission_time)}</code>"
+            )
         except Exception:
             pass
 
@@ -697,14 +713,10 @@ async def main():
             reply_markup=buttons
         )
 
-        # Send phase notification to private bot/chat
+        # Send full accomplishment report to private bot/chat
         try:
             from utils.tg_simple import notify_private
-            notify_private(
-                f"✅ <b>[ MISSION ACCOMPLISHED ]</b>\n"
-                f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
-                f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>"
-            )
+            notify_private(report)
         except Exception:
             pass
 

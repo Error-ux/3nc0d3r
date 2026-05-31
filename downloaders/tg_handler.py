@@ -509,7 +509,15 @@ async def main():
 
             try:
                 from utils.tg_simple import notify_private
-                notify_private(f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n📄 <b>FILE:</b> <code>{final_name}</code>")
+                size_mb = 0.0
+                if os.path.exists("./source.mkv"):
+                    size_mb = os.path.getsize("./source.mkv") / 1_048_576
+                notify_private(
+                    f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n\n"
+                    f"📄 <b>FILE:</b> <code>{final_name}</code>\n"
+                    f"📦 <b>SIZE:</b> <code>{size_mb:.2f} MB</code>\n"
+                    f"⚡ <b>STATUS:</b> Ready for Encoding."
+                )
             except Exception:
                 pass
 

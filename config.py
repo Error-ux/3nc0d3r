@@ -24,6 +24,41 @@ else:
 
 CHAT_ID = int(_target_chat_str) if _target_chat_str else 0
 
+# Channels to forward/copy the successfully uploaded file to
+# Channels to forward/copy the successfully uploaded file to
+FORWARD_CHATS = []
+_raw_forward = os.getenv("FORWARD_CHATS", os.getenv("TG_FORWARD_CHATS", "")).strip()
+if _raw_forward:
+    for part in _raw_forward.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if part.startswith("-") or part.isdigit():
+            try:
+                FORWARD_CHATS.append(int(part))
+            except ValueError:
+                FORWARD_CHATS.append(part)
+        else:
+            FORWARD_CHATS.append(part)
+
+# Private notification chats/users (e.g. your personal ID 6253389182)
+NOTIFY_CHATS = []
+_raw_notify = os.getenv("NOTIFY_CHATS", os.getenv("TG_NOTIFY_CHATS", "6253389182")).strip()
+if _raw_notify:
+    for part in _raw_notify.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if part.startswith("-") or part.isdigit():
+            try:
+                NOTIFY_CHATS.append(int(part))
+            except ValueError:
+                NOTIFY_CHATS.append(part)
+        else:
+            NOTIFY_CHATS.append(part)
+
+
+
 # Set environment variables for all concurrent modules and subprocesses
 os.environ["CHAT_ID"] = str(CHAT_ID)
 os.environ["TG_CHAT_ID"] = str(CHAT_ID)

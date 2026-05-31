@@ -198,6 +198,17 @@ async def main():
     res_label = config.USER_RES if (config.USER_RES and config.USER_RES.strip()) else None
     crop_val  = get_crop_params(duration)
 
+    # Send phase notification to private bot/chat
+    try:
+        from utils.tg_simple import notify_private
+        notify_private(
+            f"⚙️ <b>[ ENCODING STARTED ]</b>\n"
+            f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
+            f"🛠️ <b>CRF:</b> <code>{final_crf}</code> | <b>Preset:</b> <code>{final_preset}</code>"
+        )
+    except Exception:
+        pass
+
     # -- VIDEO FILTERS --
     # Correct filter order: crop → scale → tonemap (HDR only) → hqdn3d.
     # Crop removes unwanted pixels first, scale resizes only what's kept,
@@ -308,6 +319,22 @@ async def main():
         connect_telegram(tg_state, tg_ready, config.FILE_NAME)
     )
     tg_connect_start = time.time()   # record when we started waiting for TG
+
+    # Background task to clean up temporary download initiation messages from the channel
+    async def cleanup_download_message():
+        await tg_ready.wait()
+        app = tg_state.get("app")
+        if app and os.path.exists("dl_msg_id.txt"):
+            try:
+                with open("dl_msg_id.txt") as f:
+                    dl_msg_id = int(f.read().strip())
+                await app.delete_messages(config.CHAT_ID, dl_msg_id)
+                print(f"[CLEANUP] Deleted download start message {dl_msg_id}", flush=True)
+                os.remove("dl_msg_id.txt")
+            except Exception as e:
+                print(f"[CLEANUP ERROR] Failed to delete download start message: {e}", flush=True)
+
+    asyncio.create_task(cleanup_download_message())
 
     # Build action buttons once — shown on every progress edit during encoding.
     # Button 1: URL → opens GitHub Actions log directly (no callback needed).
@@ -644,6 +671,13 @@ async def main():
 
         import utils.ui as _ui; _ui.last_up_pct = -1; _ui.last_up_update = 0; _ui.up_start_time = 0
 
+        # Send phase notification to private bot/chat
+        try:
+            from utils.tg_simple import notify_private
+            notify_private(f"🚀 <b>[ UPLINK STARTED ]</b>\n📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>")
+        except Exception:
+            pass
+
         await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>")
 
         # Use fast_upload for parallel throughput
@@ -654,7 +688,7 @@ async def main():
             progress_args=(app, config.CHAT_ID, status, config.FILE_NAME)
         )
 
-        await app.send_document(
+        sent_msg = await app.send_document(
             chat_id=config.CHAT_ID,
             document=video_input,
             thumb=thumb,
@@ -662,6 +696,42 @@ async def main():
             parse_mode=enums.ParseMode.HTML,
             reply_markup=buttons
         )
+
+        # Send phase notification to private bot/chat
+        try:
+            from utils.tg_simple import notify_private
+            notify_private(
+                f"✅ <b>[ MISSION ACCOMPLISHED ]</b>\n"
+                f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
+                f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>"
+            )
+        except Exception:
+            pass
+
+        # Forward/Copy to channels if configured
+        if getattr(config, "FORWARD_CHATS", None):
+            print(f"[FORWARD] Copying message to {len(config.FORWARD_CHATS)} target channel(s)...", flush=True)
+            for target_chat in config.FORWARD_CHATS:
+                try:
+                    # Try copying first for a clean post without forward headers
+                    await app.copy_message(
+                        chat_id=target_chat,
+                        from_chat_id=config.CHAT_ID,
+                        message_id=sent_msg.id
+                    )
+                    print(f"[FORWARD] Successfully copied message to {target_chat}", flush=True)
+                except Exception as fe:
+                    print(f"[FORWARD] copy_message failed to {target_chat} ({fe}). Trying standard forward...", flush=True)
+                    try:
+                        await app.forward_messages(
+                            chat_id=target_chat,
+                            from_chat_id=config.CHAT_ID,
+                            message_ids=sent_msg.id
+                        )
+                        print(f"[FORWARD] Successfully forwarded message to {target_chat}", flush=True)
+                    except Exception as fe2:
+                        print(f"[FORWARD ERROR] Failed to forward to {target_chat}: {fe2}", flush=True)
+
 
         # Write success status to Redis
         await write_redis_state(

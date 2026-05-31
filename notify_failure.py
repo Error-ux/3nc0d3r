@@ -81,6 +81,13 @@ def tg_send_document(filepath, caption):
 
 tg_send_message(message)
 
+# Send failure notification to private bot/chat
+try:
+    from utils.tg_simple import notify_private
+    notify_private(message)
+except Exception:
+    pass
+
 if log_path and log_path.exists():
     tg_send_document(str(log_path), f"📋 {phase} phase log — Run #{RUN_NUMBER}")
 

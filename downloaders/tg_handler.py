@@ -376,6 +376,12 @@ async def main():
                 parse_mode=enums.ParseMode.HTML
             )
             
+            try:
+                with open("dl_msg_id.txt", "w") as f:
+                    f.write(str(status.id))
+            except Exception:
+                pass
+            
             start_time = time.time()
             final_name = "video.mkv"
 
@@ -409,6 +415,12 @@ async def main():
                 final_name = getattr(media, "file_name", "video.mkv")
                 
                 try:
+                    from utils.tg_simple import notify_private
+                    notify_private(f"📥 <b>[ DOWNLOAD STARTED ]</b>\n📄 <b>FILE:</b> <code>{final_name}</code>\n⚙️ <b>VIA:</b> <code>Telegram Message Link</code>")
+                except Exception:
+                    pass
+
+                try:
                     # Use Fast Download
                     dl_result = await fast_download(
                         app,
@@ -436,6 +448,12 @@ async def main():
                 else:
                     file_id = raw_data
                 
+                try:
+                    from utils.tg_simple import notify_private
+                    notify_private(f"📥 <b>[ DOWNLOAD STARTED ]</b>\n📄 <b>FILE:</b> <code>{final_name}</code>\n⚙️ <b>VIA:</b> <code>Telegram File ID</code>")
+                except Exception:
+                    pass
+
                 try:
                     dl_result = await fast_download_file_id(
                         app,
@@ -488,6 +506,12 @@ async def main():
             
             with open("tg_fname.txt", "w", encoding="utf-8") as f:
                 f.write(final_name)
+
+            try:
+                from utils.tg_simple import notify_private
+                notify_private(f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n📄 <b>FILE:</b> <code>{final_name}</code>")
+            except Exception:
+                pass
 
         finally:
             await app.stop()

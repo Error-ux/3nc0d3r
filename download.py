@@ -143,7 +143,7 @@ def notify_download_start(method, output_name):
         "</code>"
     )
     payload = json.dumps({"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"})
-    subprocess.run(
+    result = subprocess.run(
         [
             "curl", "-s", "-X", "POST",
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -151,9 +151,29 @@ def notify_download_start(method, output_name):
             "-d", payload,
         ],
         check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True,
     )
+    try:
+        data = json.loads(result.stdout.decode())
+        if data.get("ok"):
+            msg_id = data["result"]["message_id"]
+            with open("dl_msg_id.txt", "w") as f:
+                f.write(str(msg_id))
+    except Exception:
+        pass
+
+    # Send phase notification to private bot/chat
+    try:
+        from utils.tg_simple import notify_private
+        notify_private(
+            f"📥 <b>[ DOWNLOAD STARTED ]</b>\n"
+            f"📄 <b>FILE:</b> <code>{output_name}</code>\n"
+            f"⚙️ <b>VIA:</b> <code>{method}</code>\n"
+            f"🔢 <b>RUN:</b> <code>#{RUN_NUMBER}</code>"
+        )
+    except Exception:
+        pass
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -193,6 +213,11 @@ def download_hls_or_platform():
         ]
         print(f"📥 kwik.cx → proxy + aria2c  [{output_name}]", flush=True)
         run(cmd, label="aria2c")
+        try:
+            from utils.tg_simple import notify_private
+            notify_private(f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n📄 <b>FILE:</b> <code>{output_name}</code>")
+        except Exception:
+            pass
         return
 
     # ── HLS / other platforms → yt-dlp + aria2c ──────────────────────────────
@@ -217,6 +242,11 @@ def download_hls_or_platform():
     cmd.append(URL)
     print(f"📡 Streaming URL detected → yt-dlp  [{output_name}]", flush=True)
     run(cmd, label="yt-dlp")
+    try:
+        from utils.tg_simple import notify_private
+        notify_private(f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n📄 <b>FILE:</b> <code>{output_name}</code>")
+    except Exception:
+        pass
 
 
 def download_direct():
@@ -256,6 +286,11 @@ def download_direct():
     cmd.append(resolved)
     print(f"📥 Direct download → aria2c  [{output_name}]", flush=True)
     run(cmd, label="aria2c")
+    try:
+        from utils.tg_simple import notify_private
+        notify_private(f"✅ <b>[ DOWNLOAD COMPLETED ]</b>\n📄 <b>FILE:</b> <code>{output_name}</code>")
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -66,3 +66,33 @@ def tg_edit(msg_id: int | None, text: str) -> None:
         "text":       text,
         "parse_mode": "HTML",
     })
+
+
+def notify_private(text: str):
+    """Sends a notification to the private/notify chats configured in config.NOTIFY_CHATS."""
+    import config
+    if not config.BOT_TOKEN or not getattr(config, "NOTIFY_CHATS", None):
+        return
+    for chat in config.NOTIFY_CHATS:
+        try:
+            import json
+            import subprocess
+            payload = json.dumps({
+                "chat_id": chat,
+                "text": text,
+                "parse_mode": "HTML"
+            })
+            subprocess.run(
+                [
+                    "curl", "-s", "-X", "POST",
+                    f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage",
+                    "-H", "Content-Type: application/json",
+                    "-d", payload,
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+

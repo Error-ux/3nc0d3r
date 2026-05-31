@@ -124,14 +124,27 @@ def _resolve_session_names() -> list[str]:
 def _get_all_session_names() -> list[str]:
     """
     Return all available lane session names ordered by priority for session lane rotation.
+    Scans tg_session_dir on disk instead of relying on a hardcoded ALL_LANES list.
     """
     run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
     preferred_lane = _resolve_lane(run_number)
-    
-    # Put preferred lane first, then others
-    lanes = [preferred_lane] + [l for l in ALL_LANES if l != preferred_lane]
-    
+
     session_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tg_session_dir"))
+
+    # Discover lanes dynamically from existing .session files on disk
+    discovered_lanes = set()
+    if os.path.isdir(session_dir):
+        for f in sorted(os.listdir(session_dir)):
+            if f.endswith(".session"):
+                name = f[:-8]  # strip .session
+                for prefix in ("enc_session_", "tg_dl_session_"):
+                    if name.startswith(prefix):
+                        discovered_lanes.add(name[len(prefix):])
+
+    # Preferred lane first, then everything else alphabetically
+    other_lanes = sorted(l for l in discovered_lanes if l != preferred_lane)
+    lanes = [preferred_lane] + other_lanes
+
     sessions = []
     for l in lanes:
         sessions.append(os.path.join(session_dir, f"enc_session_{l}"))
@@ -294,6 +307,7 @@ async def rotate_session_lane(tg_state: dict) -> bool:
 
     if not candidates:
         print("[SESSION ROTATE] No more existing session files to try.")
+        tg_state["app"] = None
         return False
 
     # Close old app safely
@@ -328,6 +342,7 @@ async def rotate_session_lane(tg_state: dict) -> bool:
             continue
 
     print("[SESSION ROTATE] All existing sessions exhausted.")
+    tg_state["app"] = None
     return False
 
 
@@ -347,9 +362,8 @@ async def run_with_flood_retry(func, *args, **kwargs):
             global _active_tg_state
             if _active_tg_state and hasattr(func, "__self__"):
                 active_app = _active_tg_state.get("app")
-                if active_app and func.__self__ is not active_app:
+                if active_app and getattr(active_app, "is_connected", False) and func.__self__ is not active_app:
                     method_name = func.__name__
-                    # Re-bind the function call to the new active client instance!
                     func = getattr(active_app, method_name)
             
             return await func(*args, **kwargs)

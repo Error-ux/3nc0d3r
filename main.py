@@ -717,7 +717,10 @@ async def main():
         await tg_notify_failure(tg_state, tg_ready, config.FILE_NAME, reason)
     finally:
         if app:
-            await app.stop()
+            try:
+                await app.stop()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

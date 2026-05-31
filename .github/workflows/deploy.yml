@@ -35,7 +35,7 @@ jobs:
           owner = '${{ github.repository_owner }}'
           repo = '${{ github.event.repository.name }}'
           # Use GITHUB_TOKEN for read-only actions fetching inside the web app
-          gh_token = '${{ secrets.GITHUB_TOKEN }}'
+          gh_token = ''
           
           for filename in ['index.html', 'dashboard.html']:
               if not os.path.exists(filename):

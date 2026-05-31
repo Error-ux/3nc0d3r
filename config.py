@@ -63,6 +63,10 @@ if _raw_notify:
 os.environ["CHAT_ID"] = str(CHAT_ID)
 os.environ["TG_CHAT_ID"] = str(CHAT_ID)
 
+# Dynamic Telegram Progress Update Throttling (defaulting to 120 seconds to prevent FloodWait)
+TG_PROGRESS_INTERVAL = int(os.getenv("TG_PROGRESS_INTERVAL", "120").strip() or "120")
+os.environ["TG_PROGRESS_INTERVAL"] = str(TG_PROGRESS_INTERVAL)
+
 FILE_NAME = os.getenv("FILE_NAME", "output.mkv")
 SESSION_NAME = os.getenv("SESSION_NAME", "enc_session")
 

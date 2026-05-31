@@ -97,11 +97,14 @@ async def tg_edit(app, chat_id, msg_id, text, reply_markup=None):
 
 async def dl_progress(current, total, app, chat_id, status_msg, start_time):
     if total <= 0: return
+    now = time.time()
+    if not hasattr(dl_progress, "last_update"): dl_progress.last_update = 0
+    interval = int(os.getenv("TG_PROGRESS_INTERVAL", "120"))
+    if now - dl_progress.last_update < interval and current != total:
+        return
+    dl_progress.last_update = now
+
     pct = (current / total) * 100
-    milestone = int(pct // 5) * 5
-    if not hasattr(dl_progress, "last_pct"): dl_progress.last_pct = -1
-    if milestone <= dl_progress.last_pct: return
-    dl_progress.last_pct = milestone
     elapsed    = time.time() - start_time
     speed_mb   = (current / elapsed / 1_048_576) if elapsed > 0 else 0
     size_mb    = total / 1_048_576

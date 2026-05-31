@@ -493,8 +493,9 @@ async def main():
                     )
                     last_ui_text = scifi_ui   # always keep the freshest snapshot
 
-                    # Strict 30s throttle on Telegram message edits to avoid rate-limiting
-                    if now - last_update_time >= 30:
+                    # Strict dynamic throttle on Telegram message edits to avoid rate-limiting
+                    interval = int(os.getenv("TG_PROGRESS_INTERVAL", "120"))
+                    if now - last_update_time >= interval:
                         last_progress_pct = milestone
                         last_update_time  = now
                         # Only sends if TG is already ready; otherwise silently buffered

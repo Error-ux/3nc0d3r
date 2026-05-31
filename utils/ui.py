@@ -97,7 +97,8 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     global last_up_update
     now = time.time()
 
-    if now - last_up_update < 30:
+    interval = int(os.getenv("TG_PROGRESS_INTERVAL", "120"))
+    if now - last_up_update < interval:
         return
 
     percent = (current / total) * 100

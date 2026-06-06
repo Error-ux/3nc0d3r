@@ -228,6 +228,8 @@ async def main():
         f"aq-mode=2:variance-boost-strength=3:variance-octile=6:"
         f"enable-qm=1:qm-min=0:qm-max=8:sharpness=1:"
         f"scd=1:scd-sensitivity=10:enable-tf=1:"
+        f"chroma-u-dc-qindex-offset=-1:chroma-u-ac-qindex-offset=-1:"
+        f"chroma-v-dc-qindex-offset=-1:chroma-v-ac-qindex-offset=-1:"
         f"pin=0:lp=2:tile-columns=2:tile-rows=1:la-depth={la_depth}:"
         f"fast-decode=1"
     )

@@ -479,21 +479,17 @@ async def main():
         except Exception:
             pass
 
-        # Use fast_upload for parallel throughput
-        from utils.tg_utils import fast_upload, run_with_flood_retry
-        video_input = await fast_upload(
-            app, output_name, 
-            progress_callback=upload_progress, 
-            progress_args=(app, CHAT_ID, status, output_name)
-        )
+        # Use Telethon for resilient parallel upload (replaces Pyrogram fast_upload)
+        from utils.telethon_upload import telethon_upload_file
+        from utils.tg_utils import run_with_flood_retry
 
-        sent_msg = await run_with_flood_retry(
-            app.send_document,
+        sent_msg_id = await telethon_upload_file(
+            file_path=output_name,
             chat_id=CHAT_ID,
-            document=video_input,
-            thumb=THUMBNAIL if has_thumb else None,
             caption=report,
-            parse_mode=enums.ParseMode.HTML,
+            thumb=THUMBNAIL if has_thumb else None,
+            progress_callback=upload_progress,
+            progress_args=(app, CHAT_ID, status, output_name),
         )
 
         # Send full rename report to private bot/chat
@@ -504,16 +500,15 @@ async def main():
             pass
 
         # Forward/Copy to channels if configured
-        if getattr(config, "FORWARD_CHATS", None):
+        if sent_msg_id and getattr(config, "FORWARD_CHATS", None):
             print(f"[FORWARD] Copying message to {len(config.FORWARD_CHATS)} target channel(s)...", flush=True)
             for target_chat in config.FORWARD_CHATS:
                 try:
-                    # Try copying first for a clean post without forward headers
                     await run_with_flood_retry(
                         app.copy_message,
                         chat_id=target_chat,
                         from_chat_id=CHAT_ID,
-                        message_id=sent_msg.id
+                        message_id=sent_msg_id
                     )
                     print(f"[FORWARD] Successfully copied message to {target_chat}", flush=True)
                 except Exception as fe:
@@ -523,7 +518,7 @@ async def main():
                             app.forward_messages,
                             chat_id=target_chat,
                             from_chat_id=CHAT_ID,
-                            message_ids=sent_msg.id
+                            message_ids=sent_msg_id
                         )
                         print(f"[FORWARD] Successfully forwarded message to {target_chat}", flush=True)
                     except Exception as fe2:
@@ -547,6 +542,11 @@ async def main():
         except: pass
         sys.exit(1)
     finally:
+        # Disconnect Telethon upload client
+        try:
+            from utils.telethon_upload import disconnect_client
+            await disconnect_client()
+        except: pass
         try: await app.stop()
         except: pass
 

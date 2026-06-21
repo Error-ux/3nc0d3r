@@ -643,22 +643,25 @@ async def main():
 
         await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>")
 
-        # Use fast_upload for parallel throughput
-        from utils.tg_utils import fast_upload, run_with_flood_retry
-        video_input = await fast_upload(
-            app, config.FILE_NAME, 
-            progress_callback=upload_progress, 
-            progress_args=(app, config.CHAT_ID, status, config.FILE_NAME)
-        )
+        # Use Telethon for resilient parallel upload (replaces Pyrogram fast_upload)
+        from utils.telethon_upload import telethon_upload_file
+        from utils.tg_utils import run_with_flood_retry
 
-        sent_msg = await run_with_flood_retry(
-            app.send_document,
+        # Convert Pyrogram buttons to (text, url) tuples for Telethon
+        buttons_data = []
+        if cloud["source"] == "gofile" and cloud.get("page"):
+            buttons_data.append(("Gofile", cloud["page"]))
+        elif cloud["source"] == "litterbox" and cloud.get("direct"):
+            buttons_data.append(("Litterbox", cloud["direct"]))
+
+        sent_msg_id = await telethon_upload_file(
+            file_path=config.FILE_NAME,
             chat_id=config.CHAT_ID,
-            document=video_input,
-            thumb=thumb,
             caption=report,
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=buttons
+            thumb=thumb,
+            buttons_data=buttons_data or None,
+            progress_callback=upload_progress,
+            progress_args=(app, config.CHAT_ID, status, config.FILE_NAME),
         )
 
         # Send full accomplishment report to private bot/chat
@@ -669,16 +672,15 @@ async def main():
             pass
 
         # Forward/Copy to channels if configured
-        if getattr(config, "FORWARD_CHATS", None):
+        if sent_msg_id and getattr(config, "FORWARD_CHATS", None):
             print(f"[FORWARD] Copying message to {len(config.FORWARD_CHATS)} target channel(s)...", flush=True)
             for target_chat in config.FORWARD_CHATS:
                 try:
-                    # Try copying first for a clean post without forward headers
                     await run_with_flood_retry(
                         app.copy_message,
                         chat_id=target_chat,
                         from_chat_id=config.CHAT_ID,
-                        message_id=sent_msg.id
+                        message_id=sent_msg_id
                     )
                     print(f"[FORWARD] Successfully copied message to {target_chat}", flush=True)
                 except Exception as fe:
@@ -688,7 +690,7 @@ async def main():
                             app.forward_messages,
                             chat_id=target_chat,
                             from_chat_id=config.CHAT_ID,
-                            message_ids=sent_msg.id
+                            message_ids=sent_msg_id
                         )
                         print(f"[FORWARD] Successfully forwarded message to {target_chat}", flush=True)
                     except Exception as fe2:
@@ -719,6 +721,11 @@ async def main():
         )
         await tg_notify_failure(tg_state, tg_ready, config.FILE_NAME, reason)
     finally:
+        # Disconnect Telethon upload client
+        try:
+            from utils.telethon_upload import disconnect_client
+            await disconnect_client()
+        except: pass
         if app:
             try:
                 await app.stop()

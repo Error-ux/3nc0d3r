@@ -5,3 +5,4 @@ psutil
 anitopy
 aiohttp
 curl_cffi
+telethon

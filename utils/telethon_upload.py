@@ -17,6 +17,7 @@ import os
 import time
 
 from telethon import TelegramClient, helpers
+from telethon.sessions import StringSession
 from telethon.tl import types, functions
 
 import config
@@ -27,18 +28,34 @@ _client_lock = asyncio.Lock()
 
 
 async def _get_client() -> TelegramClient:
-    """Lazily create and cache a single Telethon bot client."""
+    """Lazily create and cache a single Telethon bot client.
+    
+    Uses StringSession from TG_TELETHON_SESSION env var to avoid
+    re-authenticating the bot on every GHA run (which triggers FloodWait).
+    """
     global _client
     async with _client_lock:
         if _client is None or not _client.is_connected():
-            _client = TelegramClient(
-                "telethon_upload_session",
-                int(os.getenv("API_ID", os.getenv("TG_API_ID", "0"))),
-                os.getenv("API_HASH", os.getenv("TG_API_HASH", "")),
-            )
+            api_id = int(os.getenv("API_ID", os.getenv("TG_API_ID", "0")))
+            api_hash = os.getenv("API_HASH", os.getenv("TG_API_HASH", ""))
             bot_token = os.getenv("BOT_TOKEN", os.getenv("TG_BOT_TOKEN", ""))
-            await _client.start(bot_token=bot_token)
-            print("[telethon] Bot client connected.", flush=True)
+            session_str = os.getenv("TG_TELETHON_SESSION", "")
+
+            if session_str:
+                # Reuse existing session — no re-auth, no FloodWait
+                _client = TelegramClient(StringSession(session_str), api_id, api_hash)
+                await _client.connect()
+                if not await _client.is_user_authorized():
+                    await _client.sign_in(bot_token=bot_token)
+                print("[telethon] Bot client connected (session reused).", flush=True)
+            else:
+                # First-time auth — print session string for user to save
+                _client = TelegramClient(StringSession(), api_id, api_hash)
+                await _client.start(bot_token=bot_token)
+                new_session = _client.session.save()
+                print("[telethon] Bot client connected (fresh auth).", flush=True)
+                print(f"[telethon] ⚠️  Save this as GHA secret TG_TELETHON_SESSION to avoid FloodWait:", flush=True)
+                print(f"[telethon] SESSION={new_session}", flush=True)
     return _client
 
 

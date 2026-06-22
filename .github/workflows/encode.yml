@@ -239,6 +239,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           CHAT_ID_OTHER: ${{ secrets.TG_CHAT_ID_OTHER }}
+          TG_TELETHON_SESSION: ${{ secrets.TG_TELETHON_SESSION }}
           SESSION_NAME: "enc_session"
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           USER_RES: ${{ github.event.inputs.res_choice }}

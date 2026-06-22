@@ -103,6 +103,7 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
           TG_CHAT_ID_OTHER: ${{ secrets.TG_CHAT_ID_OTHER }}
+          TG_TELETHON_SESSION: ${{ secrets.TG_TELETHON_SESSION }}
           VIDEO_URL:    ${{ github.event.inputs.video_url }}
           ANIME_NAME:   ${{ github.event.inputs.anime_name }}
           SEASON:       ${{ github.event.inputs.season }}

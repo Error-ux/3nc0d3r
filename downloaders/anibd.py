@@ -67,8 +67,17 @@ def check_dependencies():
 
 # ─── Telegram ────────────────────────────────────────────────────────────────
 # Shared lightweight HTTP helpers (no Pyrogram required at download time)
-from utils.tg_simple import tg_api as _tg_api, tg_send as _tg_send_new, tg_edit as _tg_edit
-from utils.tg_simple import BOT_TOKEN, CHAT_ID, RUN_NUMBER
+try:
+    from utils.tg_simple import tg_api as _tg_api, tg_send as _tg_send_new, tg_edit as _tg_edit
+    from utils.tg_simple import BOT_TOKEN, CHAT_ID, RUN_NUMBER
+except ImportError:
+    BOT_TOKEN = None
+    CHAT_ID = None
+    RUN_NUMBER = "?"
+    def _tg_api(endpoint, payload): return None
+    def _tg_send_new(text): return None
+    def _tg_edit(msg_id, text): return None
+
 
 # Episode/season set by the workflow bridge; defaults to 1
 _EPISODE_ENV = os.environ.get("EPISODE", "1").strip()
@@ -171,30 +180,51 @@ def parse_input_url(url: str) -> tuple[str | None, int, str | None]:
     Parse any anibd.app URL.
     Returns (post_id, server_api_id, slug).  slug is None for base anime URLs.
     """
-    m = re.search(r"playid/(\d+)/\??server=(\d+)&slug=(\w+)", url)
+    # 1. Play/watch URLs: e.g., https://anibd.app/up/410196/watch/?server=10&slug=01
+    # or https://anibd.app/playid/410196/?server=10&slug=01
+    m = re.search(r"(?:playid|up)/(\d+)(?:/watch)?/?\?.*server=(\d+).*slug=(\w+)", url)
     if m:
         return m.group(1), int(m.group(2)), m.group(3)
-    m = re.search(r'anibd\.app/(\d+)', url)
+        
+    m = re.search(r"(?:playid|up)/(\d+)(?:/watch)?/?\?.*slug=(\w+)", url)
+    if m:
+        server_m = re.search(r"server=(\d+)", url)
+        server = int(server_m.group(1)) if server_m else 10
+        return m.group(1), server, m.group(2)
+
+    # 2. Base anime page URL: e.g., https://anibd.app/up/410196/ or https://anibd.app/410196/
+    m = re.search(r'anibd\.app/(?:up/)?(\d+)', url)
     if m:
         return m.group(1), 10, None
+        
     return None, None, None
 
 
 def _parse_playid_url(url: str) -> tuple[str, int, str] | None:
     """Returns (post_id, server_api_id, slug) for direct play URLs, else None."""
-    m = re.search(r"playid/(\d+)/?\??server=(\d+)&slug=(\w+)", url)
-    return (m.group(1), int(m.group(2)), m.group(3)) if m else None
+    post_id, server_api_id, slug = parse_input_url(url)
+    if post_id and slug:
+        return post_id, server_api_id, slug
+    return None
 
 # ─── Page Scrapers ───────────────────────────────────────────────────────────
+_metadata_cache = {}
+
+def _get_anime_metadata(post_id: str) -> dict | None:
+    if post_id in _metadata_cache:
+        return _metadata_cache[post_id]
+    url = f"https://eng.animeapps.top/api/single.php?postid={post_id}"
+    res = _fetch(url, as_json=True)
+    if res and res.get("status") == "success" and "data" in res:
+        _metadata_cache[post_id] = res["data"]
+        return res["data"]
+    return None
+
 def _get_anime_title(post_id: str) -> str:
-    html = _fetch(f"https://anibd.app/{post_id}/",
-                  headers={"Referer": "https://anibd.app/"})
-    if not html:
+    meta = _get_anime_metadata(post_id)
+    if not meta:
         return "Unknown Anime"
-    m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
-    if not m:
-        return "Unknown Anime"
-    title = m.group(1)
+    title = meta.get("postname", "Unknown Anime")
     noise_patterns = [
         r'\s*[-|]\s*Uncensored\s*[-|/].*$',
         r'\s*BD\s*\(.*?\)',
@@ -213,12 +243,8 @@ def _get_anime_title(post_id: str) -> str:
 
 
 def _get_ep_id(post_id: str) -> str | None:
-    html = _fetch(f"https://anibd.app/{post_id}/",
-                  headers={"Referer": "https://anibd.app/"})
-    if not html:
-        return None
-    m = re.search(r'const\s+EP_ID\s*=\s*["\']?(\d+)["\']?', html)
-    return m.group(1) if m else None
+    meta = _get_anime_metadata(post_id)
+    return meta.get("anilist") if meta else None
 
 
 def _fetch_episode_list(ep_id: str) -> list:
@@ -232,67 +258,34 @@ def _fetch_episode_list(ep_id: str) -> list:
         return []
 
 # ─── M3U8 Resolver (multi-server, robust) ────────────────────────────────────
-def _get_player_urls(post_id: str, server_api_id: int, slug: str) -> tuple[list[str], str | None]:
-    """Return (player_urls, episode_title) from the play page."""
-    play_page = (
-        f"https://anibd.app/playid/{post_id}/"
-        f"?server={server_api_id}&slug={slug}"
-    )
-    html = _fetch(play_page, headers={
-        "Referer":                   f"https://anibd.app/{post_id}/",
-        "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language":           "en-US,en;q=0.5",
-        "Connection":                "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-    })
-    if not html:
-        return [], None
-
-    # Scrape episode title from <h1 class="episode-title">
-    ep_title = None
-    tm = re.search(r'<h1[^>]*class=["\']episode-title["\'][^>]*>([^<]+)</h1>', html, re.IGNORECASE)
-    if tm:
-        ep_title = tm.group(1).strip()
-
-    # Collect all playeng URLs: data-src buttons first, then iframe fallback
-    urls = re.findall(r'data-src=["\']([^"\']+playeng[^"\']+)["\']', html)
-    urls += re.findall(r'<iframe[^>]+src=["\']([^"\']+playeng[^"\']+)["\']', html)
-
-    seen, result = set(), []
-    for u in urls:
-        u = u.replace("&#038;", "&").replace("&amp;", "&")
-        if u not in seen:
-            seen.add(u)
-            result.append(u)
-    return result, ep_title
+def _get_player_urls_new(link: str) -> list[dict]:
+    url = f"https://epeng.animeapps.top/apilink.php?data={link}"
+    res = _fetch(url, as_json=True)
+    if isinstance(res, list):
+        return res
+    return []
 
 
 def _fetch_m3u8_info(link: str, post_id: str, server_api_id: int = 10,
                      ep_num: int | None = None) -> dict | None:
     """
     Resolve the M3U8 URL and return segment list + metadata.
-    Tries multiple server buttons in order (SR → SB → S3 → S4).
+    Tries multiple server buttons returned from apilink API.
     Returns None if all servers fail.
     """
-    # Use ep_num as slug (episode number), not the server suffix from link
-    if ep_num is not None:
-        slug = f"{ep_num:02d}"
-    else:
-        m    = re.search(r'(?:uc|ww)(\d+)$', link)
-        slug = f"{int(m.group(1)):02d}" if m else "01"
-
-    player_urls, ep_title = _get_player_urls(post_id, server_api_id, slug)
-    if not player_urls:
-        print(f"  {YL}⚠ No player URLs found on play page{R}", flush=True)
+    player_entries = _get_player_urls_new(link)
+    if not player_entries:
+        print(f"  {YL}⚠ No player URLs found for link {link}{R}", flush=True)
         return None
 
-    server_labels = ["SR", "SB", "S3", "S4"]
-
-    for i, player_url in enumerate(player_urls):
-        label = server_labels[i] if i < len(server_labels) else f"S{i+1}"
+    for entry in player_entries:
+        label = entry.get("server", "?")
+        player_url = entry.get("link")
+        if not player_url:
+            continue
 
         html = _fetch(player_url, headers={
-            "Referer": f"https://anibd.app/playid/{post_id}/",
+            "Referer": "https://anibd.app/",
             "Origin":  "https://anibd.app",
         })
         if not html:
@@ -304,7 +297,6 @@ def _fetch_m3u8_info(link: str, post_id: str, server_api_id: int = 10,
             print(f"  {YL}⚠ Server {label}: no m3u8 found in player page{R}", flush=True)
             continue
 
-        # Derive origin dynamically from the working player URL
         from urllib.parse import urlparse
         parsed = urlparse(player_url)
         origin = f"{parsed.scheme}://{parsed.netloc}"
@@ -352,8 +344,7 @@ def _fetch_m3u8_info(link: str, post_id: str, server_api_id: int = 10,
 
             print(f"  {GR}✓ Server {label}: resolved M3U8 ({len(segments)} segments){R}",
                   flush=True)
-            if ep_title:
-                print(f"  {DIM}Title: {ep_title}{R}", flush=True)
+            ep_title = f"Episode {ep_num:02d}" if ep_num is not None else None
             return {
                 "url":        m3u8_url,
                 "server":     label,
@@ -369,6 +360,7 @@ def _fetch_m3u8_info(link: str, post_id: str, server_api_id: int = 10,
               flush=True)
 
     return None
+
 
 # ─── Formatting ──────────────────────────────────────────────────────────────
 def fmt_duration(secs):
@@ -417,10 +409,12 @@ def download_segment(seg_url: str, seg_file: Path) -> bool:
         "Referer": "https://playeng.animeapps.top/",
         "Origin": "https://playeng.animeapps.top"
     }
-    data = _fetch(seg_url, binary=True)
-    if data:
-        seg_file.write_bytes(data)
-        return True
+    for attempt in range(3):
+        data = _fetch(seg_url, headers=headers, binary=True)
+        if data:
+            seg_file.write_bytes(data)
+            return True
+        time.sleep(1)
     return False
 
 # ─── CLI Downloader (parallel, MP4 output) ───────────────────────────────────
@@ -638,7 +632,9 @@ def download(url: str) -> None:
         season_num = max(1, int(_SEASON_ENV))
     except ValueError:
         season_num = 1
-    tg_filename = f"[S{season_num:02d}-E{ep_num:02d}] {safe_title} [1080p].mkv"
+        
+    from utils.rename import build_output_name
+    tg_filename = build_output_name(safe_title, season_num, ep_num, "1080p", "Sub")
 
     print("▶ Resolving M3U8...", flush=True)
     msg_id = _notify_start(tg_filename)
@@ -758,7 +754,11 @@ def main():
             print(f"  {RD}E{idx:02d}    All servers failed — skipping{R}")
             continue
 
-        first_seg = _fetch(info["segments"][0], binary=True)
+        headers = {
+            "Referer": "https://playeng.animeapps.top/",
+            "Origin": "https://playeng.animeapps.top"
+        }
+        first_seg = _fetch(info["segments"][0], headers=headers, binary=True)
         seg_size  = (len(first_seg) / 1024 / 1024) if first_seg else 1.2
         est_mb    = seg_size * info["count"]
 

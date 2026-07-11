@@ -153,15 +153,15 @@ def build_output_name(
     """
     Assemble the final filename.
 
-    Normal:   [S02-E07] Anime Name [1080p] [Dual].mkv
-    Special:  [S01-SP03] Anime Name [1080p] [Sub].mkv
+    Normal:   Anime Name - S01EP01 [1080p-Sub].mkv
+    Special:  Anime Name - S01SP01 [1080p-Sub].mkv
     """
     safe_name   = re.sub(r'[<>:"/\\|?*\n\r\t]', "", anime_name).strip()
     season_str  = f"S{int(season):02d}"
-    ep_prefix   = "SP" if is_special else "E"
+    ep_prefix   = "SP" if is_special else "EP"
     episode_str = f"{ep_prefix}{int(episode):02d}"
 
-    return f"[{season_str}-{episode_str}] {safe_name} [{quality}] [{audio_type}].{ext}"
+    return f"{safe_name} - {season_str}{episode_str} [{quality}-{audio_type}].{ext}"
 
 
 # ---------------------------------------------------------------------------

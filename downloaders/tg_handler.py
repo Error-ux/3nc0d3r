@@ -147,7 +147,9 @@ async def fast_download(client, message, file_name, progress_callback, progress_
     async def download_chunk(offset):
         nonlocal downloaded_chunks
         async with semaphore:
-            for _ in range(3): 
+            success = False
+            last_err = None
+            for attempt in range(3): 
                 try:
                     r = await client.invoke(
                         raw.functions.upload.GetFile(
@@ -162,12 +164,18 @@ async def fast_download(client, message, file_name, progress_callback, progress_
                             os.pwrite(fd, r.bytes, offset)
                         finally:
                             os.close(fd)
+                    success = True
                     break
                 except FloodWait as e:
+                    last_err = e
                     await asyncio.sleep(e.value + 2)
                 except Exception as e:
+                    last_err = e
                     print(f"Error downloading chunk at {offset}: {e}")
                     await asyncio.sleep(2)
+            
+            if not success:
+                raise last_err if last_err else RuntimeError(f"Failed downloading chunk at {offset}")
             
             downloaded_chunks += 1
             await progress_callback(
@@ -226,6 +234,8 @@ async def fast_download_file_id(client, file_id, file_name, progress_callback, p
             if finished_event.is_set() and (total_size is not None and offset >= total_size):
                 return
             
+            success = False
+            last_err = None
             for attempt in range(3):
                 try:
                     r = await client.invoke(
@@ -248,12 +258,18 @@ async def fast_download_file_id(client, file_id, file_name, progress_callback, p
                             total_size = offset + chunk_len
                             finished_event.set()
                             
+                    success = True
                     break
                 except FloodWait as e:
+                    last_err = e
                     await asyncio.sleep(e.value + 2)
                 except Exception as e:
+                    last_err = e
                     print(f"Error downloading chunk at {offset}: {e}")
                     await asyncio.sleep(2)
+            
+            if not success:
+                raise last_err if last_err else RuntimeError(f"Failed downloading chunk at {offset}")
             
             downloaded_chunks += 1
             await progress_callback(
@@ -436,15 +452,29 @@ async def main():
                         progress_args=(app, chat_id, status, start_time)
                     )
                 except Exception as dl_err:
-                    err_msg = f"fast_download raised an exception: {dl_err}"
-                    print(f"❌ {err_msg}")
-                    traceback.print_exc()
-                    await app.edit_message_text(
-                        chat_id, status.id,
-                        f"❌ <b>[ DOWNLOAD.FAILED ]</b>\n<code>{err_msg}</code>",
-                        parse_mode=enums.ParseMode.HTML
-                    )
-                    sys.exit(1)
+                    print(f"⚠️ fast_download failed: {dl_err}. Falling back to standard download_media...", flush=True)
+                    if os.path.exists("./source.mkv"):
+                        try:
+                            os.remove("./source.mkv")
+                        except Exception:
+                            pass
+                    try:
+                        dl_result = await app.download_media(
+                            msg,
+                            file_name="./source.mkv",
+                            progress=progress,
+                            progress_args=(app, chat_id, status, start_time)
+                        )
+                    except Exception as fallback_err:
+                        err_msg = f"Both fast_download and fallback download_media failed. Last error: {fallback_err}"
+                        print(f"❌ {err_msg}")
+                        traceback.print_exc()
+                        await app.edit_message_text(
+                            chat_id, status.id,
+                            f"❌ <b>[ DOWNLOAD.FAILED ]</b>\n<code>{err_msg}</code>",
+                            parse_mode=enums.ParseMode.HTML
+                        )
+                        sys.exit(1)
 
             elif "tg_file:" in url:
                 raw_data = url.replace("tg_file:", "")
@@ -469,14 +499,28 @@ async def main():
                         progress_args=(app, chat_id, status, start_time)
                     )
                 except Exception as dl_err:
-                    err_msg = f"download_media raised an exception: {dl_err}"
-                    print(f"❌ {err_msg}")
-                    await app.edit_message_text(
-                        chat_id, status.id,
-                        f"❌ <b>[ DOWNLOAD.FAILED ]</b>\n<code>{err_msg}</code>",
-                        parse_mode=enums.ParseMode.HTML
-                    )
-                    sys.exit(1)
+                    print(f"⚠️ fast_download_file_id failed: {dl_err}. Falling back to standard download_media...", flush=True)
+                    if os.path.exists("./source.mkv"):
+                        try:
+                            os.remove("./source.mkv")
+                        except Exception:
+                            pass
+                    try:
+                        dl_result = await app.download_media(
+                            file_id.strip(),
+                            file_name="./source.mkv",
+                            progress=progress,
+                            progress_args=(app, chat_id, status, start_time)
+                        )
+                    except Exception as fallback_err:
+                        err_msg = f"Both fast_download_file_id and fallback download_media failed. Last error: {fallback_err}"
+                        print(f"❌ {err_msg}")
+                        await app.edit_message_text(
+                            chat_id, status.id,
+                            f"❌ <b>[ DOWNLOAD.FAILED ]</b>\n<code>{err_msg}</code>",
+                            parse_mode=enums.ParseMode.HTML
+                        )
+                        sys.exit(1)
             else:
                 await app.edit_message_text(chat_id, status.id, "❌ <b>ERROR: Unsupported URL format.</b>", parse_mode=enums.ParseMode.HTML)
                 sys.exit(1)

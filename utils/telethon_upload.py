@@ -200,8 +200,14 @@ async def telethon_upload_file(
         attributes = [types.DocumentAttributeFilename(os.path.basename(file_path))]
 
         # 4. Send the document
+        try:
+            entity = await client.get_entity(chat_id)
+        except Exception as e:
+            print(f"[telethon_upload] Warning: get_entity failed for {chat_id}: {e}. Retrying with direct ID.", flush=True)
+            entity = chat_id
+
         result = await client.send_file(
-            chat_id,
+            entity,
             input_file,
             caption=caption,
             parse_mode="html",

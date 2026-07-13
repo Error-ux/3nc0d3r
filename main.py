@@ -664,6 +664,24 @@ async def main():
             progress_args=(app, config.CHAT_ID, status, config.FILE_NAME),
         )
 
+        if not sent_msg_id:
+            print("[UPLINK] Telegram video upload failed. Sending text-only fallback report...", flush=True)
+            try:
+                fallback_text = (
+                    f"⚠️ <b>[ TG VIDEO UPLOAD FAILED ]</b>\n"
+                    f"The video file upload to Telegram failed, but the cloud link is available below:\n\n"
+                    f"{report}"
+                )
+                sent_msg = await app.send_message(
+                    chat_id=config.CHAT_ID,
+                    text=fallback_text,
+                    reply_markup=buttons,
+                    parse_mode=enums.ParseMode.HTML
+                )
+                sent_msg_id = sent_msg.id
+            except Exception as se:
+                print(f"[UPLINK ERROR] Failed to send fallback text report: {se}", flush=True)
+
         # Send full accomplishment report to private bot/chat
         try:
             from utils.tg_simple import notify_private

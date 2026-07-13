@@ -667,11 +667,19 @@ async def main():
         if not sent_msg_id:
             print("[UPLINK] Telegram video upload failed. Sending text-only fallback report...", flush=True)
             try:
-                fallback_text = (
-                    f"⚠️ <b>[ TG VIDEO UPLOAD FAILED ]</b>\n"
-                    f"The video file upload to Telegram failed, but the cloud link is available below:\n\n"
-                    f"{report}"
-                )
+                if buttons:
+                    fallback_text = (
+                        f"⚠️ <b>[ TG VIDEO UPLOAD FAILED ]</b>\n"
+                        f"The video file upload to Telegram failed, but the cloud link is available below:\n\n"
+                        f"{report}"
+                    )
+                else:
+                    fallback_text = (
+                        f"⚠️ <b>[ TG VIDEO UPLOAD FAILED ]</b>\n"
+                        f"The video file upload to Telegram failed, and no cloud upload was enabled:\n\n"
+                        f"{report}"
+                    )
+
                 sent_msg = await app.send_message(
                     chat_id=config.CHAT_ID,
                     text=fallback_text,

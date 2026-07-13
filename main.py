@@ -666,6 +666,23 @@ async def main():
 
         if not sent_msg_id:
             print("[UPLINK] Telegram video upload failed. Sending text-only fallback report...", flush=True)
+            
+            # EMERGENCY FALLBACK: If Gofile was disabled/failed, trigger it now
+            if not buttons:
+                print("[UPLINK] Gofile was set to False. Triggering emergency backup upload to Gofile...", flush=True)
+                try:
+                    await tg_edit(tg_state, tg_ready, "<b>[ EMERGENCY.CLOUD ] TG upload failed. Uploading to Gofile...</b>")
+                    cloud = await upload_to_cloud(config.FILE_NAME, app, config.CHAT_ID, status)
+                    
+                    btn_row = []
+                    if cloud["source"] == "gofile" and cloud.get("page"):
+                        btn_row.append(InlineKeyboardButton("Gofile", url=cloud["page"]))
+                    elif cloud["source"] == "litterbox" and cloud.get("direct"):
+                        btn_row.append(InlineKeyboardButton("Litterbox", url=cloud["direct"]))
+                    buttons = InlineKeyboardMarkup([btn_row]) if btn_row else None
+                except Exception as ue:
+                    print(f"[UPLINK ERROR] Failed to perform emergency Gofile upload: {ue}", flush=True)
+
             try:
                 if buttons:
                     fallback_text = (
@@ -676,7 +693,7 @@ async def main():
                 else:
                     fallback_text = (
                         f"⚠️ <b>[ TG VIDEO UPLOAD FAILED ]</b>\n"
-                        f"The video file upload to Telegram failed, and no cloud upload was enabled:\n\n"
+                        f"The video file upload to Telegram failed, and cloud upload fallback failed too:\n\n"
                         f"{report}"
                     )
 

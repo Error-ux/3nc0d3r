@@ -6,3 +6,4 @@ anitopy
 aiohttp
 curl_cffi
 telethon
+huggingface_hub

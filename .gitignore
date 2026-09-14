@@ -20,6 +20,8 @@ output.mkv
 
 # Logs
 encode_log.txt
+download.log
+downloads/
 
 # Local temporary binaries & credentials
 cloudflared

@@ -82,10 +82,15 @@ def resolve_filename(url):
     except Exception:
         pass
 
-    # Fallback: URL path basename, URL-decoded
+    # Fallback: URL path basename, URL-decoded recursively
     raw = urllib.parse.urlparse(url).path.split("/")[-1]
     raw = re.sub(r"\?.*", "", raw)
-    return urllib.parse.unquote(raw)
+    for _ in range(5):
+        nxt = urllib.parse.unquote(raw)
+        if nxt == raw:
+            break
+        raw = nxt
+    return raw
 
 
 def ensure_video_ext(name):

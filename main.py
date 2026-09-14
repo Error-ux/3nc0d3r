@@ -100,19 +100,29 @@ async def main():
         os.path.exists("iwara_source.txt")
     )
 
-    if not anime_name and not _managed_source:
+    # Ensure config.FILE_NAME is fully unquoted (multi-pass)
+    if config.FILE_NAME:
+        from urllib.parse import unquote
+        _fn = config.FILE_NAME
+        for _ in range(5):
+            _nxt = unquote(_fn)
+            if _nxt == _fn:
+                break
+            _fn = _nxt
+        config.FILE_NAME = _fn
+
+    # Only run auto-detection via anitopy if explicitly enabled OR if CONTENT_TYPE is Anime and AUTO_RENAME is true
+    should_auto_rename = getattr(config, "AUTO_RENAME", False) and config.CONTENT_TYPE.lower() == "anime"
+
+    if not anime_name and not _managed_source and should_auto_rename:
         # ── Auto-detect from filename (anitopy) ────────────────────────────
-        # Priority: FILE_NAME (Content-Disposition) → VIDEO_URL query param → URL path
         from urllib.parse import urlparse, parse_qs, unquote
         from utils.rename import parse_from_filename
 
         raw_filename = ""
-
-        # Best source: filename resolved by resolve_filename.py in the workflow
         if config.FILE_NAME and any(c.isalpha() for c in config.FILE_NAME):
             raw_filename = config.FILE_NAME
 
-        # Fallback: extract from VIDEO_URL query param / path
         if not raw_filename:
             source_url = os.getenv("VIDEO_URL", "")
             if source_url:
@@ -125,12 +135,15 @@ async def main():
                 )
 
         if raw_filename:
+            for _ in range(5):
+                _nxt = unquote(raw_filename)
+                if _nxt == raw_filename:
+                    break
+                raw_filename = _nxt
             parsed = parse_from_filename(raw_filename)
             if parsed:
                 anime_name = parsed["anime_name"]
                 is_special = parsed["is_special"]
-                # Rename OFF: bridge's episode/season are sequential placeholders —
-                # always trust what was detected from the actual filename.
                 config.SEASON  = str(parsed["season"])
                 config.EPISODE = str(parsed["episode"])
 
@@ -149,10 +162,13 @@ async def main():
         config.FILE_NAME = resolved_name
         print(f"[rename] Output → {resolved_name}  |  Audio: {audio_type_label}")
     else:
-        # No rename requested — probe tracks for report only
+        # Preserve original filename (ensure valid video extension)
         from utils.rename import get_track_info
         audio_tracks, sub_tracks = get_track_info(config.SOURCE)
         audio_type_label = None
+        if not re.search(r"\.(mkv|mp4|webm)$", config.FILE_NAME, re.IGNORECASE):
+            config.FILE_NAME = f"{config.FILE_NAME}.mkv"
+        print(f"[preserve] Preserving original title → {config.FILE_NAME}")
 
     # 4. PARAMETER CONFIGURATION
     # CRF and preset come directly from bridge inputs — no auto-selection.
@@ -514,12 +530,24 @@ async def main():
             os.rename(fixed_file, config.FILE_NAME)
 
         # 8. METRICS + CLOUD UPLOAD
-        # Run in sequence: cloud upload first (status message shows upload progress),
-        # then VMAF in a separate message — avoids both tasks fighting over the same
-        # status message and overwriting each other's progress updates.
         final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
 
         grid_task = asyncio.create_task(async_generate_thumbnail(duration, config.FILE_NAME))
+
+        # Optional Hugging Face Dataset Upload (Disguised + DB Index + Frontend)
+        hf_record = None
+        if getattr(config, "RUN_HF_UPLOAD", False) and getattr(config, "HF_REPO", ""):
+            try:
+                await tg_edit(tg_state, tg_ready, "<b>[ CLOUD.HF ] Disguising & Uploading to Hugging Face...</b>")
+                from utils.hf_upload import upload_to_hf
+                hf_record = upload_to_hf(
+                    filepath=config.FILE_NAME,
+                    repo_id=config.HF_REPO,
+                    token=config.HF_TOKEN,
+                    path_in_repo=config.HF_FOLDER,
+                )
+            except Exception as hfe:
+                print(f"[HF ERROR] Upload failed (non-fatal): {hfe}", flush=True)
 
         if config.RUN_UPLOAD:
             await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.CLOUD ] Uploading to Gofile...</b>")
@@ -570,6 +598,10 @@ async def main():
                 btn_row.append(InlineKeyboardButton("Gofile", url=cloud["page"]))
         elif cloud["source"] == "litterbox" and cloud.get("direct"):
             btn_row.append(InlineKeyboardButton("Litterbox", url=cloud["direct"]))
+
+        if hf_record and hf_record.get("direct_url"):
+            btn_row.append(InlineKeyboardButton("HF Archive", url=hf_record["direct_url"]))
+
         buttons = InlineKeyboardMarkup([btn_row]) if btn_row else None
 
         # 10. FINAL UPLINK
@@ -609,6 +641,10 @@ async def main():
             f"⚡ <b>DEMO MODE:</b> <code>{demo_duration}s from {demo_start}</code>\n"
             if demo_mode else ""
         )
+        hf_report_line = (
+            f"└ HF Disguised: <code>{hf_record['disguised_name']}</code>\n"
+            if hf_record else ""
+        )
         report = (
             f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
             f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
@@ -622,6 +658,7 @@ async def main():
             f"└ Audio: {audio_mode_line}\n"
             f"{content_line}"
             f"{demo_report_line}"
+            f"{hf_report_line}"
             f"\n{track_report}"
             f"{user_track_notes}"
         )
@@ -653,6 +690,8 @@ async def main():
             buttons_data.append(("Gofile", cloud["page"]))
         elif cloud["source"] == "litterbox" and cloud.get("direct"):
             buttons_data.append(("Litterbox", cloud["direct"]))
+        if hf_record and hf_record.get("direct_url"):
+            buttons_data.append(("HF Archive", hf_record["direct_url"]))
 
         sent_msg_id = await telethon_upload_file(
             file_path=config.FILE_NAME,

@@ -84,6 +84,13 @@ AUDIO_BITRATE = os.getenv("AUDIO_BITRATE", "48k")
 RUN_VMAF      = os.getenv("RUN_VMAF",      "true").lower() == "true"
 RUN_UPLOAD    = os.getenv("RUN_UPLOAD",    "true").lower() == "true"
 
+# ---------- HUGGING FACE UPLOAD SETTINGS ----------
+HF_TOKEN      = os.getenv("HF_TOKEN", "").strip()
+HF_REPO       = os.getenv("HF_REPO", "").strip()
+HF_FOLDER     = os.getenv("HF_FOLDER", "").strip()
+RUN_HF_UPLOAD = os.getenv("RUN_HF_UPLOAD", "true" if HF_REPO else "false").lower() == "true"
+AUTO_RENAME   = os.getenv("AUTO_RENAME", "false").lower() == "true"
+
 
 
 # Unique key per run so parallel encodes don't collide.

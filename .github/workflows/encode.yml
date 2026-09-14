@@ -34,6 +34,18 @@ on:
       run_upload:
         description: 'Upload to Gofile?'
         default: 'false'
+      run_hf_upload:
+        description: 'Upload to Hugging Face?'
+        default: 'false'
+      hf_repo:
+        description: 'Hugging Face Dataset Repo (e.g. ausable14/DB)'
+        default: ''
+      hf_folder:
+        description: 'HF Subfolder'
+        default: ''
+      auto_rename:
+        description: 'Auto-Rename Anime (true/false)'
+        default: 'false'
       anime_name:
         description: 'Anime Name (leave blank to skip rename)'
         default: ''
@@ -261,6 +273,11 @@ jobs:
           DEMO_DURATION: ${{ github.event.inputs.demo_duration }}
           ENCODER_TITLE: ${{ github.event.inputs.encoder_title }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ github.event.inputs.hf_repo }}
+          HF_FOLDER: ${{ github.event.inputs.hf_folder }}
+          RUN_HF_UPLOAD: ${{ github.event.inputs.run_hf_upload }}
+          AUTO_RENAME: ${{ github.event.inputs.auto_rename }}
         run: |
           set -eo pipefail
           # FILE_NAME resolved from tg_fname.txt (written by download step)

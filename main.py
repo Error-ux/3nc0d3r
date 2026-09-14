@@ -642,7 +642,7 @@ async def main():
             if demo_mode else ""
         )
         hf_report_line = (
-            f"└ HF Disguised: <code>{hf_record['disguised_name']}</code>\n"
+            f"└ HF Archive: <a href=\"{hf_record['direct_url']}\">Download</a> (<code>{hf_record['disguised_name']}</code>)\n"
             if hf_record else ""
         )
         report = (

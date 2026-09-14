@@ -86,9 +86,9 @@ RUN_UPLOAD    = os.getenv("RUN_UPLOAD",    "true").lower() == "true"
 
 # ---------- HUGGING FACE UPLOAD SETTINGS ----------
 HF_TOKEN      = os.getenv("HF_TOKEN", "").strip()
-HF_REPO       = os.getenv("HF_REPO", "").strip()
+HF_REPO       = os.getenv("HF_REPO", "ausable14/DB").strip()
 HF_FOLDER     = os.getenv("HF_FOLDER", "").strip()
-RUN_HF_UPLOAD = os.getenv("RUN_HF_UPLOAD", "true" if HF_REPO else "false").lower() == "true"
+RUN_HF_UPLOAD = os.getenv("RUN_HF_UPLOAD", "true").lower() == "true"
 AUTO_RENAME   = os.getenv("AUTO_RENAME", "false").lower() == "true"
 
 

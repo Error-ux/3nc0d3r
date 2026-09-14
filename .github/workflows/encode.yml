@@ -36,10 +36,10 @@ on:
         default: 'false'
       run_hf_upload:
         description: 'Upload to Hugging Face?'
-        default: 'false'
+        default: 'true'
       hf_repo:
         description: 'Hugging Face Dataset Repo (e.g. ausable14/DB)'
-        default: ''
+        default: 'ausable14/DB'
       hf_folder:
         description: 'HF Subfolder'
         default: ''

@@ -600,8 +600,9 @@ async def main():
         elif cloud["source"] == "litterbox" and cloud.get("direct"):
             btn_row.append(InlineKeyboardButton("Litterbox", url=cloud["direct"]))
 
-        if hf_record and hf_record.get("direct_url"):
-            btn_row.append(InlineKeyboardButton("HF Archive", url=hf_record["direct_url"]))
+        hf_dl_url = (hf_record.get("download_url") or hf_record.get("direct_url")) if hf_record else None
+        if hf_dl_url:
+            btn_row.append(InlineKeyboardButton("HF Archive", url=hf_dl_url))
 
         buttons = InlineKeyboardMarkup([btn_row]) if btn_row else None
 
@@ -643,8 +644,8 @@ async def main():
             if demo_mode else ""
         )
         hf_report_line = (
-            f"└ HF Archive: <a href=\"{hf_record['direct_url']}\">Download</a> (<code>{hf_record['disguised_name']}</code>)\n"
-            if hf_record else ""
+            f"└ HF Archive: <a href=\"{hf_dl_url}\">Download</a> (<code>{hf_record['disguised_name']}</code>)\n"
+            if hf_record and hf_dl_url else ""
         )
         report = (
             f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
@@ -691,8 +692,8 @@ async def main():
             buttons_data.append(("Gofile", cloud["page"]))
         elif cloud["source"] == "litterbox" and cloud.get("direct"):
             buttons_data.append(("Litterbox", cloud["direct"]))
-        if hf_record and hf_record.get("direct_url"):
-            buttons_data.append(("HF Archive", hf_record["direct_url"]))
+        if hf_dl_url:
+            buttons_data.append(("HF Archive", hf_dl_url))
 
         sent_msg_id = await telethon_upload_file(
             file_path=config.FILE_NAME,

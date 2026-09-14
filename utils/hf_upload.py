@@ -256,7 +256,7 @@ HTML_FRONTEND_TEMPLATE = """<!DOCTYPE html>
 
             listEl.innerHTML = files.map(file => {
                 const safeName = escapeHtml(file.original_name);
-                const safeUrl = escapeHtml(file.direct_url);
+                const safeUrl = escapeHtml(file.download_url || file.direct_url);
                 return `
                 <div class="file-card">
                     <div class="file-info">
@@ -432,6 +432,10 @@ def upload_to_hf(filepath: str, repo_id: str, token: str = None,
         db_records = []
 
     # Construct the metadata record
+    import urllib.parse
+    worker_url = os.getenv("WORKER_URL", "https://dl.error-ux.workers.dev").rstrip("/")
+    download_url = f"{worker_url}/?repo={repo_id}&file={remote_video_path}&name={urllib.parse.quote(original_filename)}"
+
     new_record = {
         "id": file_id,
         "original_name": original_filename,
@@ -439,6 +443,7 @@ def upload_to_hf(filepath: str, repo_id: str, token: str = None,
         "path": remote_video_path,
         "size_mb": file_mb,
         "direct_url": direct_url,
+        "download_url": download_url,
         "uploaded_at": datetime.utcnow().isoformat() + "Z"
     }
 

@@ -433,7 +433,7 @@ def upload_to_hf(filepath: str, repo_id: str, token: str = None,
 
     # Construct the metadata record
     import urllib.parse
-    worker_url = os.getenv("WORKER_URL", "https://dl.error-ux.workers.dev").rstrip("/")
+    worker_url = os.getenv("WORKER_URL", "https://dl.e-ux.workers.dev").rstrip("/")
     download_url = f"{worker_url}/?repo={repo_id}&file={remote_video_path}&name={urllib.parse.quote(original_filename)}"
 
     new_record = {

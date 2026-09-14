@@ -90,7 +90,7 @@ HF_REPO       = os.getenv("HF_REPO", "ausable14/DB").strip()
 HF_FOLDER     = os.getenv("HF_FOLDER", "").strip()
 RUN_HF_UPLOAD = os.getenv("RUN_HF_UPLOAD", "true").lower() == "true"
 AUTO_RENAME   = os.getenv("AUTO_RENAME", "false").lower() == "true"
-WORKER_URL    = os.getenv("WORKER_URL", "https://dl.error-ux.workers.dev").strip()
+WORKER_URL    = os.getenv("WORKER_URL", "https://dl.e-ux.workers.dev").strip()
 
 
 

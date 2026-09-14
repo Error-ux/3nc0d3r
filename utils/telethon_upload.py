@@ -185,16 +185,15 @@ async def telethon_upload_file(
         )
 
         # 2. Build inline buttons (if any)
-        from telethon.tl.types import (
-            ReplyInlineMarkup,
-            KeyboardButtonUrl,
-            KeyboardButtonRow,
-        )
         reply_markup = None
         if buttons_data:
-            btn_row = [KeyboardButtonUrl(text=t, url=u) for t, u in buttons_data if u]
-            if btn_row:
-                reply_markup = ReplyInlineMarkup(rows=[KeyboardButtonRow(buttons=btn_row)])
+            try:
+                from telethon import Button
+                btn_row = [Button.url(t, u) for t, u in buttons_data if u]
+                if btn_row:
+                    reply_markup = [btn_row]
+            except Exception as be:
+                print(f"[telethon_upload] Warning: Failed to build inline buttons ({be}). Proceeding without buttons.", flush=True)
 
         # 3. Build attributes
         attributes = [types.DocumentAttributeFilename(os.path.basename(file_path))]
